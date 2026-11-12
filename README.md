@@ -4,24 +4,31 @@ Cemu (Wii U emulator) as a libretro core for RetroArch, with amiibo support in t
 
 ## Amiibo
 
+Amiibo are `.bin` NTAG215 dumps (540 bytes; 532-byte dumps work too). The amiibo keys are built in, so no `key_retail.bin` is needed.
+
+**Where the core looks** (each one found becomes a choice in **Amiibo Location**):
+
+- `system/Cemu/amiibo/` (created on first run)
+- a folder named `amiibo` or `amiibos` (any capitalisation) at the top of internal storage or of an SD card, or one folder down, such as `ROMs/amiibo` (Android: `/storage/emulated/0` and every volume under `/storage`; elsewhere: the home folder)
+- an `amiibo` folder next to the loaded game, or next to the game's folder
+- every folder listed in `system/Cemu/amiibo_paths.txt`, one full path per line (lines starting with `#` are skipped)
+
 ```
-retroarch/
-└── system/
-    └── Cemu/
-        └── amiibo/                 (created on first run)
-            ├── Mario.bin
-            └── Zelda/              (subfolders are fine)
-                ├── Link.bin
-                └── Wolf Link.bin
+SD card/
+└── amiibo/
+    ├── Mario.bin
+    └── Zelda/              (subfolders are fine)
+        ├── Link.bin
+        └── Wolf Link.bin
 ```
 
-- An amiibo is a `.bin` NTAG215 dump (540 bytes; 532-byte dumps work too). The amiibo keys are built in, so no `key_retail.bin` is needed.
-- **Core Options → Amiibo**: pick the folder in **Amiibo Folder** (at most 126 amiibo per folder, so split large collections into subfolders), then the figure in **Amiibo**. Picking one while a game runs taps it on the GamePad.
-- **Tap Amiibo** taps the selected figure again, for when the game asks for it a second time. **Tap Amiibo Button** puts that on Select + L, R, L2 or R2 (off by default).
+**Core Options → Amiibo**:
+
+- **Amiibo Location**, then **Amiibo Folder** (the location's top folder or any subfolder), then **Amiibo**. Picking one while a game runs taps it on the GamePad.
+- RetroArch lists at most 128 values in an option, so a folder with more than 126 amiibo gets **Amiibo Letter**: pick the first letter, and Amiibo lists those. A letter with more than 126 is split into parts. There is no limit on the total.
+- **Refresh Amiibo List** reads everything again, for files copied or an SD card put in after the game was loaded.
+- **Tap Amiibo** taps the selected figure again, for when the game asks a second time. **Tap Amiibo Button** puts that on Select + L, R, L2 or R2 (off by default).
 - The game writes its data back into the `.bin`, as it would to a real figure, so keep a copy of dumps you care about.
-- New files show up the next time the options are put together: at a game load, or when another folder is picked.
-
-Version: **2.6-411-gb487cb70**, upstream Cemu as merged (`b487cb70`, 10 Nov 2026).
 
 ## Getting the core
 

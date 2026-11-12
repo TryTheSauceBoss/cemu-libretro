@@ -2662,39 +2662,58 @@ static void libretro_update_addon_visibility()
 // ============================================================================
 // Amiibo
 // ============================================================================
-// Amiibo are NTAG215 dumps (.bin) kept in system/Cemu/amiibo/ and its
-// subfolders. Tapping one goes through nfc::TouchTagFromFile, the same call
-// standalone Cemu's "NFC > Scan NFC tag from file" makes; it hands the tag to
-// nn_nfp when the title initialised it, and nn_nfp writes the title's data
-// back into the .bin, as a real figure would keep it. The amiibo keys are
-// built into Cemu, so no key_retail.bin is needed.
+// Amiibo are NTAG215 dumps (.bin). Tapping one goes through
+// nfc::TouchTagFromFile, the same call standalone Cemu's "NFC > Scan NFC tag
+// from file" makes; it hands the tag to nn_nfp when the title initialised it,
+// and nn_nfp writes the title's data back into the .bin, as a real figure
+// would keep it. The amiibo keys are built into Cemu, so no key_retail.bin.
+//
+// Where they are read from is Amiibo Location: system/Cemu/amiibo, any folder
+// named amiibo (or amiibos) at the top of a storage volume or one folder down
+// - which is how an SD card is found on Android - one beside the loaded game
+// or its parent folder, and every folder listed in system/Cemu/amiibo_paths.txt.
 //
 // A frontend lists at most RETRO_NUM_CORE_OPTION_VALUES_MAX values per option,
-// so the files are picked from one folder at a time: Amiibo Folder lists the
-// folders, Amiibo the .bin files in the chosen one.
+// so a pick goes down a chain: Location, Folder (its subfolders), Letter
+// (only when a folder holds more than fit in one list), then the amiibo.
+// The chain is declared one level at a time, the first time, and each level
+// read back before the next is declared: declared with another level's
+// values, the frontend would drop the choice remembered in the .opt file.
 static void libretro_publish_core_options(retro_environment_t cb, bool withReplacements);
 
 static constexpr size_t kAmiiboMaxListed = RETRO_NUM_CORE_OPTION_VALUES_MAX - 2;
-// Relative to the amiibo root, '/'-separated; "." is the root itself.
-static std::vector<std::string> s_amiibo_folders;
-// File names in s_amiibo_folder.
-static std::vector<std::string> s_amiibo_files;
+
+struct LibretroAmiiboLocation
+{
+	std::string path;  // absolute, UTF-8
+	std::string label;
+};
+struct LibretroAmiiboGroup
+{
+	std::string key;   // the option value
+	std::string label;
+	size_t begin;      // into s_amiibo_folder_files
+	size_t end;
+};
+
+static std::vector<LibretroAmiiboLocation> s_amiibo_locations;
+static std::vector<std::string> s_amiibo_folders;     // relative to the location, '/'-separated; "." is its top
+static std::vector<std::string> s_amiibo_folder_files; // every .bin in the folder, sorted
+static std::vector<LibretroAmiiboGroup> s_amiibo_groups;
+static std::string s_amiibo_location;
 static std::string s_amiibo_folder = ".";
-// Whether the folder has been read back from the frontend. Until it has, the
-// Amiibo option is not declared: declared with another folder's files, the
-// frontend would drop the choice remembered in the .opt file (as it did with
-// the accounts). libretro_publish_core_options declares the folders first,
-// reads the folder back and declares again with its files.
-static bool s_amiibo_folder_read = false;
-// The folder/file picked in the options, relative to the root; empty for none.
+static std::string s_amiibo_group;
+// How many levels of the chain (location, folder, letter) have been read back
+// from the frontend; the amiibo itself is declared once all three have.
+static int s_amiibo_levels_read = 0;
+// The amiibo picked in the options, as an absolute path; empty for none.
 static std::string s_amiibo_selected;
 
 enum class LibretroAmiiboButton
 {
 	None,
-	// Select together with a shoulder or trigger, which the GamePad does not
-	// press together in any title this was tried with; while held, the title
-	// sees no input (s_layout_combo_held_this_frame).
+	// Select together with a shoulder or trigger; while held, the title sees
+	// no input (s_layout_combo_held_this_frame).
 	SelectL,
 	SelectR,
 	SelectL2,
@@ -2703,14 +2722,9 @@ enum class LibretroAmiiboButton
 static LibretroAmiiboButton s_amiibo_button = LibretroAmiiboButton::None;
 static bool s_amiibo_button_held = false;
 
-static fs::path libretro_amiibo_root()
+static fs::path libretro_amiibo_default_root()
 {
 	return ActiveSettings::GetUserDataPath() / "amiibo";
-}
-
-static fs::path libretro_amiibo_folder_path(const std::string& folder)
-{
-	return folder == "." ? libretro_amiibo_root() : libretro_amiibo_root() / _utf8ToPath(folder);
 }
 
 static bool libretro_amiibo_less(const std::string& a, const std::string& b)
@@ -2719,23 +2733,140 @@ static bool libretro_amiibo_less(const std::string& a, const std::string& b)
 		[](unsigned char x, unsigned char y) { return std::tolower(x) < std::tolower(y); });
 }
 
-// The folders and, for the chosen folder, its .bin files. Read whenever the
-// options are published, so a file copied in shows up the next time the list
-// is put together (a game load, or picking a folder).
+static bool libretro_amiibo_is_folder_name(const fs::path& name)
+{
+	const std::string n = _pathToUtf8(name);
+	return libretro_iequals(n.c_str(), "amiibo") || libretro_iequals(n.c_str(), "amiibos");
+}
+
+static void libretro_collect_amiibo_locations()
+{
+	s_amiibo_locations.clear();
+	std::vector<std::string> seen;
+	const auto add = [&](const fs::path& dir, const std::string& kind) {
+		if (s_amiibo_locations.size() >= kAmiiboMaxListed)
+			return;
+		std::error_code ec;
+		if (!fs::is_directory(dir, ec))
+			return;
+		fs::path canonical = fs::weakly_canonical(dir, ec);
+		if (ec)
+			canonical = dir;
+		const std::string key = _pathToUtf8(canonical);
+		if (std::find(seen.begin(), seen.end(), key) != seen.end())
+			return;
+		seen.push_back(key);
+		s_amiibo_locations.push_back({_pathToUtf8(dir), fmt::format("{}: {}", kind, _pathToUtf8(dir))});
+	};
+	// A folder named amiibo directly in root, or in one of root's folders.
+	const auto search = [&](const fs::path& root, const std::string& kind) {
+		std::error_code ec;
+		for (auto it = fs::directory_iterator(root, fs::directory_options::skip_permission_denied, ec);
+			!ec && it != fs::directory_iterator(); it.increment(ec))
+		{
+			std::error_code entryEc;
+			if (!it->is_directory(entryEc))
+				continue;
+			const fs::path name = it->path().filename();
+			if (libretro_amiibo_is_folder_name(name))
+			{
+				add(it->path(), kind);
+				continue;
+			}
+			// Android/ holds other apps' data, which is not ours to read
+			if (libretro_iequals(_pathToUtf8(name).c_str(), "Android") || _pathToUtf8(name).starts_with("."))
+				continue;
+			std::error_code subEc;
+			for (auto sub = fs::directory_iterator(it->path(), fs::directory_options::skip_permission_denied, subEc);
+				!subEc && sub != fs::directory_iterator(); sub.increment(subEc))
+			{
+				std::error_code subEntryEc;
+				if (sub->is_directory(subEntryEc) && libretro_amiibo_is_folder_name(sub->path().filename()))
+					add(sub->path(), kind);
+			}
+		}
+	};
+
+	std::error_code ec;
+	const fs::path defaultRoot = libretro_amiibo_default_root();
+	fs::create_directories(defaultRoot, ec);
+	add(defaultRoot, "RetroArch system/Cemu");
+
+	// Folders the user named, one per line
+	{
+		std::ifstream list(ActiveSettings::GetUserDataPath() / "amiibo_paths.txt");
+		std::string line;
+		while (list && std::getline(list, line))
+		{
+			while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t'))
+				line.pop_back();
+			size_t start = line.find_first_not_of(" \t");
+			if (start == std::string::npos || line[start] == '#')
+				continue;
+			add(_utf8ToPath(line.substr(start)), "amiibo_paths.txt");
+		}
+	}
+
+	// Beside the loaded game, or beside its folder
+	if (!s_game_path.empty())
+	{
+		const fs::path gameDir = _utf8ToPath(s_game_path).parent_path();
+		for (const fs::path& dir : {gameDir, gameDir.parent_path()})
+		{
+			if (dir.empty())
+				continue;
+			std::error_code dirEc;
+			for (auto it = fs::directory_iterator(dir, fs::directory_options::skip_permission_denied, dirEc);
+				!dirEc && it != fs::directory_iterator(); it.increment(dirEc))
+			{
+				std::error_code entryEc;
+				if (it->is_directory(entryEc) && libretro_amiibo_is_folder_name(it->path().filename()))
+					add(it->path(), "Next to the game");
+			}
+		}
+	}
+
+#if defined(__ANDROID__)
+	// Internal storage, and every SD card or USB drive mounted under /storage
+	search("/storage/emulated/0", "Internal storage");
+	for (auto it = fs::directory_iterator("/storage", fs::directory_options::skip_permission_denied, ec);
+		!ec && it != fs::directory_iterator(); it.increment(ec))
+	{
+		const std::string name = _pathToUtf8(it->path().filename());
+		if (name == "emulated" || name == "self")
+			continue;
+		search(it->path(), "SD card");
+	}
+#else
+	// The user's home folder and, elsewhere, nothing guessed at: a drive is
+	// added through amiibo_paths.txt
+	if (const char* home = getenv("HOME"); home && *home)
+		search(_utf8ToPath(home), "Home");
+#endif
+}
+
+// The folders of the chosen location, the .bin files of the chosen folder and
+// how they split into lists. Read whenever the options are published, so what
+// is on disk then is what the menu shows; Refresh Amiibo List publishes again.
 static void libretro_scan_amiibo()
 {
 	s_amiibo_folders.clear();
-	s_amiibo_files.clear();
+	s_amiibo_folder_files.clear();
+	s_amiibo_groups.clear();
 	s_amiibo_folders.push_back(".");
 	if (!s_initialized)
 		return;
 
-	const fs::path root = libretro_amiibo_root();
-	std::error_code ec;
-	fs::create_directories(root, ec);
+	libretro_collect_amiibo_locations();
+	if (std::none_of(s_amiibo_locations.begin(), s_amiibo_locations.end(),
+		[](const LibretroAmiiboLocation& l) { return l.path == s_amiibo_location; }))
+		s_amiibo_location = s_amiibo_locations.empty() ? std::string() : s_amiibo_locations.front().path;
+	if (s_amiibo_location.empty())
+		return;
+	const fs::path root = _utf8ToPath(s_amiibo_location);
 
 	std::vector<std::string> subfolders;
-	ec.clear();
+	std::error_code ec;
 	for (auto it = fs::recursive_directory_iterator(root, fs::directory_options::skip_permission_denied, ec);
 		!ec && it != fs::recursive_directory_iterator(); it.increment(ec))
 	{
@@ -2757,8 +2888,9 @@ static void libretro_scan_amiibo()
 	if (std::find(s_amiibo_folders.begin(), s_amiibo_folders.end(), s_amiibo_folder) == s_amiibo_folders.end())
 		s_amiibo_folder = ".";
 
+	const fs::path folderPath = s_amiibo_folder == "." ? root : root / _utf8ToPath(s_amiibo_folder);
 	ec.clear();
-	for (auto it = fs::directory_iterator(libretro_amiibo_folder_path(s_amiibo_folder), fs::directory_options::skip_permission_denied, ec);
+	for (auto it = fs::directory_iterator(folderPath, fs::directory_options::skip_permission_denied, ec);
 		!ec && it != fs::directory_iterator(); it.increment(ec))
 	{
 		std::error_code entryEc;
@@ -2767,15 +2899,68 @@ static void libretro_scan_amiibo()
 		const std::string ext = _pathToUtf8(it->path().extension());
 		if (!libretro_iequals(ext.c_str(), ".bin"))
 			continue;
-		s_amiibo_files.push_back(_pathToUtf8(it->path().filename()));
+		s_amiibo_folder_files.push_back(_pathToUtf8(it->path().filename()));
 	}
-	std::sort(s_amiibo_files.begin(), s_amiibo_files.end(), libretro_amiibo_less);
-	if (s_amiibo_files.size() > kAmiiboMaxListed)
+	std::sort(s_amiibo_folder_files.begin(), s_amiibo_folder_files.end(), libretro_amiibo_less);
+
+	// One list when they fit; otherwise one per first letter (# for the
+	// rest), and a letter with more than fit in a list is split into parts.
+	if (s_amiibo_folder_files.size() <= kAmiiboMaxListed)
+		s_amiibo_groups.push_back({"all", "All", 0, s_amiibo_folder_files.size()});
+	else
 	{
-		libretro_log(RETRO_LOG_WARN, "amiibo folder %s has %u .bin files; only the first %u are listed, put the rest in subfolders\n",
-			s_amiibo_folder.c_str(), (unsigned)s_amiibo_files.size(), (unsigned)kAmiiboMaxListed);
-		s_amiibo_files.resize(kAmiiboMaxListed);
+		const auto letterOf = [](const std::string& name) -> char {
+			const unsigned char c = name.empty() ? 0 : (unsigned char)name[0];
+			return std::isalpha(c) ? (char)std::toupper(c) : '#';
+		};
+		size_t i = 0;
+		while (i < s_amiibo_folder_files.size())
+		{
+			const char letter = letterOf(s_amiibo_folder_files[i]);
+			size_t end = i;
+			while (end < s_amiibo_folder_files.size() && letterOf(s_amiibo_folder_files[end]) == letter)
+				++end;
+			const size_t count = end - i;
+			const size_t parts = (count + kAmiiboMaxListed - 1) / kAmiiboMaxListed;
+			for (size_t part = 0; part < parts && s_amiibo_groups.size() < kAmiiboMaxListed; ++part)
+			{
+				const size_t b = i + part * kAmiiboMaxListed;
+				const size_t e = std::min(end, b + kAmiiboMaxListed);
+				std::string key(1, letter);
+				std::string label = parts == 1
+					? fmt::format("{} ({})", letter, e - b)
+					: fmt::format("{}, part {} of {} ({})", letter, part + 1, parts, e - b);
+				if (parts > 1)
+					key += std::to_string(part + 1);
+				s_amiibo_groups.push_back({key, label, b, e});
+			}
+			i = end;
+		}
 	}
+	if (std::none_of(s_amiibo_groups.begin(), s_amiibo_groups.end(),
+		[](const LibretroAmiiboGroup& g) { return g.key == s_amiibo_group; }))
+		s_amiibo_group = s_amiibo_groups.front().key;
+
+	libretro_log(RETRO_LOG_INFO, "amiibo: %u location(s), %u .bin in %s/%s, %u list(s)\n",
+		(unsigned)s_amiibo_locations.size(), (unsigned)s_amiibo_folder_files.size(),
+		s_amiibo_location.c_str(), s_amiibo_folder.c_str(), (unsigned)s_amiibo_groups.size());
+}
+
+static const LibretroAmiiboGroup* libretro_amiibo_current_group()
+{
+	for (const LibretroAmiiboGroup& group : s_amiibo_groups)
+		if (group.key == s_amiibo_group)
+			return &group;
+	return s_amiibo_groups.empty() ? nullptr : &s_amiibo_groups.front();
+}
+
+// Letter is only worth showing when there is more than one list.
+static void libretro_update_amiibo_visibility()
+{
+	if (!environ_cb)
+		return;
+	struct retro_core_option_display display{"cemu_amiibo_group", s_amiibo_groups.size() > 1};
+	environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &display);
 }
 
 // Puts the selected amiibo on the GamePad's NFC reader, once. The title takes
@@ -2793,7 +2978,7 @@ static void libretro_tap_amiibo()
 		libretro_show_message(RETRO_LOG_WARN, 4000, "Start a game before tapping an amiibo.");
 		return;
 	}
-	const fs::path path = libretro_amiibo_root() / _utf8ToPath(s_amiibo_selected);
+	const fs::path path = _utf8ToPath(s_amiibo_selected);
 	const std::string name = _pathToUtf8(path.stem());
 	uint32 error = 0;
 	if (!nfc::TouchTagFromFile(path, &error))
@@ -2817,24 +3002,77 @@ static LibretroAmiiboButton libretro_parse_amiibo_button(const char* v)
 	return LibretroAmiiboButton::None;
 }
 
+// Hands the frontend the chain as the scan settled it. A location that is
+// gone (an SD card taken out) or a folder that was deleted falls back to the
+// first entry, and the frontend has to hear that, or the value it still holds
+// would look like a change at every options update.
+static void libretro_sync_amiibo_chain()
+{
+	if (!s_amiibo_location.empty())
+		libretro_set_option_value("cemu_amiibo_location", s_amiibo_location.c_str());
+	libretro_set_option_value("cemu_amiibo_folder", s_amiibo_folder.c_str());
+	if (!s_amiibo_group.empty())
+		libretro_set_option_value("cemu_amiibo_group", s_amiibo_group.c_str());
+}
+
 static void libretro_apply_amiibo_options()
 {
-	// Another folder: its files are a different list, so the options are
-	// declared again, and the file picked in the old folder is let go.
-	if (const char* v = libretro_get_option_value("cemu_amiibo_folder"); v && *v && s_amiibo_folder_read && s_amiibo_folder != v)
+	// A level of the chain that changed: the lists below it are different
+	// ones, so the options are declared again from there down.
+	if (s_amiibo_levels_read >= 3)
 	{
-		s_amiibo_folder = v;
-		s_amiibo_folder_read = true;
-		libretro_publish_core_options(environ_cb, true);
-		libretro_set_option_value("cemu_amiibo_file", "none");
+		const char* location = libretro_get_option_value("cemu_amiibo_location");
+		const char* folder = libretro_get_option_value("cemu_amiibo_folder");
+		const char* group = libretro_get_option_value("cemu_amiibo_group");
+		if (location && *location && s_amiibo_location != location)
+		{
+			s_amiibo_location = location;
+			s_amiibo_folder = ".";
+			s_amiibo_group.clear();
+			libretro_publish_core_options(environ_cb, true);
+			libretro_sync_amiibo_chain();
+			libretro_set_option_value("cemu_amiibo_file", "none");
+		}
+		else if (folder && *folder && s_amiibo_folder != folder)
+		{
+			s_amiibo_folder = folder;
+			s_amiibo_group.clear();
+			libretro_publish_core_options(environ_cb, true);
+			libretro_sync_amiibo_chain();
+			libretro_set_option_value("cemu_amiibo_file", "none");
+		}
+		else if (group && *group && s_amiibo_group != group)
+		{
+			s_amiibo_group = group;
+			libretro_publish_core_options(environ_cb, true);
+			libretro_sync_amiibo_chain();
+			libretro_set_option_value("cemu_amiibo_file", "none");
+		}
+	}
+
+	// Refresh Amiibo List is a request: the lists are read again, then off.
+	if (const char* v = libretro_get_option_value("cemu_amiibo_refresh"); v && !strcmp(v, "enabled"))
+	{
+		libretro_set_option_value("cemu_amiibo_refresh", "disabled");
+		if (s_initialized)
+		{
+			libretro_publish_core_options(environ_cb, true);
+			libretro_sync_amiibo_chain();
+			libretro_show_message(RETRO_LOG_INFO, 3000, fmt::format("{} amiibo in this folder", s_amiibo_folder_files.size()));
+		}
 	}
 
 	// Picking an amiibo while a game runs taps it, which is what someone who
 	// just picked one wants. At a game load the title is not running yet, so
 	// the choice remembered in the .opt file is only taken note of.
 	std::string selected;
-	if (const char* v = libretro_get_option_value("cemu_amiibo_file"); v && *v && strcmp(v, "none") != 0)
-		selected = s_amiibo_folder == "." ? std::string(v) : s_amiibo_folder + "/" + v;
+	if (const char* v = libretro_get_option_value("cemu_amiibo_file"); v && *v && strcmp(v, "none") != 0 && !s_amiibo_location.empty())
+	{
+		fs::path path = _utf8ToPath(s_amiibo_location);
+		if (s_amiibo_folder != ".")
+			path /= _utf8ToPath(s_amiibo_folder);
+		selected = _pathToUtf8(path / _utf8ToPath(v));
+	}
 	const bool changed = selected != s_amiibo_selected;
 	s_amiibo_selected = std::move(selected);
 	if (changed && !s_amiibo_selected.empty() && CafeSystem::IsTitleRunning())
@@ -2894,6 +3132,7 @@ static bool RETRO_CALLCONV libretro_update_options_display()
 	libretro_update_convert_visibility();
 	libretro_update_pack_visibility();
 	libretro_update_addon_visibility();
+	libretro_update_amiibo_visibility();
 	return true;
 }
 
@@ -4236,37 +4475,68 @@ static void libretro_publish_core_options(retro_environment_t cb, bool withRepla
 		break;
 	}
 
-	// Amiibo: the folders under system/Cemu/amiibo and the .bin files in the
-	// chosen one, read now so the lists are current.
+	// Amiibo: the locations, the chosen location's folders, the chosen
+	// folder's lists and the chosen list's .bin files, read now so they are
+	// current.
 	libretro_scan_amiibo();
 	for (struct retro_core_option_v2_definition& def : option_defs_us)
 	{
 		if (!def.key)
 			break;
-		if (!strcmp(def.key, "cemu_amiibo_folder"))
+		size_t index = 0;
+		if (!strcmp(def.key, "cemu_amiibo_location"))
 		{
-			size_t index = 0;
+			for (const LibretroAmiiboLocation& location : s_amiibo_locations)
+			{
+				if (index + 1 >= RETRO_NUM_CORE_OPTION_VALUES_MAX)
+					break;
+				def.values[index].value = keep(location.path);
+				def.values[index].label = keep(location.label);
+				++index;
+			}
+			if (index == 0)
+				def.values[index++] = {"none", "Nowhere to read from"};
+			def.values[index] = {nullptr, nullptr};
+			def.default_value = def.values[0].value;
+		}
+		else if (!strcmp(def.key, "cemu_amiibo_folder"))
+		{
 			for (const std::string& folder : s_amiibo_folders)
 			{
 				if (index + 1 >= RETRO_NUM_CORE_OPTION_VALUES_MAX)
 					break;
 				def.values[index].value = keep(folder);
-				def.values[index].label = keep(folder == "." ? std::string("amiibo (top folder)") : folder);
+				def.values[index].label = keep(folder == "." ? std::string("(top folder)") : folder);
 				++index;
 			}
 			def.values[index] = {nullptr, nullptr};
 		}
-		else if (!strcmp(def.key, "cemu_amiibo_file"))
+		else if (!strcmp(def.key, "cemu_amiibo_group"))
 		{
-			size_t index = 0;
-			def.values[index++] = {"none", "None"};
-			for (const std::string& file : s_amiibo_files)
+			for (const LibretroAmiiboGroup& group : s_amiibo_groups)
 			{
 				if (index + 1 >= RETRO_NUM_CORE_OPTION_VALUES_MAX)
 					break;
-				def.values[index].value = keep(file);
-				def.values[index].label = keep(_pathToUtf8(_utf8ToPath(file).stem()));
+				def.values[index].value = keep(group.key);
+				def.values[index].label = keep(group.label);
 				++index;
+			}
+			if (index == 0)
+				def.values[index++] = {"all", "All"};
+			def.values[index] = {nullptr, nullptr};
+			def.default_value = def.values[0].value;
+		}
+		else if (!strcmp(def.key, "cemu_amiibo_file"))
+		{
+			def.values[index++] = {"none", "None"};
+			if (const LibretroAmiiboGroup* group = libretro_amiibo_current_group())
+			{
+				for (size_t i = group->begin; i < group->end && index + 1 < RETRO_NUM_CORE_OPTION_VALUES_MAX; ++i)
+				{
+					def.values[index].value = keep(s_amiibo_folder_files[i]);
+					def.values[index].label = keep(_pathToUtf8(_utf8ToPath(s_amiibo_folder_files[i]).stem()));
+					++index;
+				}
 			}
 			def.values[index] = {nullptr, nullptr};
 		}
@@ -4288,9 +4558,13 @@ static void libretro_publish_core_options(retro_environment_t cb, bool withRepla
 			continue;
 		if (s_wua_destinations.empty() && (!strcmp(def.key, "cemu_wua_output_dir") || !strcmp(def.key, "cemu_convert_to_wua")))
 			continue;
-		if (!accountsKnown && !strcmp(def.key, "cemu_amiibo_folder"))
+		if (!accountsKnown && !strcmp(def.key, "cemu_amiibo_location"))
 			continue;
-		if (!s_amiibo_folder_read && !strcmp(def.key, "cemu_amiibo_file"))
+		if (s_amiibo_levels_read < 1 && !strcmp(def.key, "cemu_amiibo_folder"))
+			continue;
+		if (s_amiibo_levels_read < 2 && !strcmp(def.key, "cemu_amiibo_group"))
+			continue;
+		if (s_amiibo_levels_read < 3 && !strcmp(def.key, "cemu_amiibo_file"))
 			continue;
 		if (!def.category_key)
 			addons.push_back(def);
@@ -4322,15 +4596,22 @@ static void libretro_publish_core_options(retro_environment_t cb, bool withRepla
 	libretro_update_pack_visibility();
 	libretro_update_addon_visibility();
 
-	// The first time the folders are declared: read the folder back, now that
-	// the frontend knows the option, and declare again with its files.
-	if (accountsKnown && !s_amiibo_folder_read)
+	libretro_update_amiibo_visibility();
+
+	// The first time: read the level just declared back, now that the
+	// frontend knows the option, and declare again with the level below it.
+	if (accountsKnown && s_amiibo_levels_read < 3)
 	{
-		if (const char* v = libretro_get_option_value("cemu_amiibo_folder"); v && *v)
-			s_amiibo_folder = v;
-		s_amiibo_folder_read = true;
+		static const char* const keys[] = {"cemu_amiibo_location", "cemu_amiibo_folder", "cemu_amiibo_group"};
+		std::string* const values[] = {&s_amiibo_location, &s_amiibo_folder, &s_amiibo_group};
+		if (const char* v = libretro_get_option_value(keys[s_amiibo_levels_read]); v && *v)
+			*values[s_amiibo_levels_read] = v;
+		++s_amiibo_levels_read;
 		libretro_publish_core_options(cb, withReplacements);
+		if (s_amiibo_levels_read == 3)
+			libretro_sync_amiibo_chain();
 	}
+}
 }
 
 RETRO_API void retro_set_video_refresh(retro_video_refresh_t cb) { video_cb = cb; }

@@ -62,7 +62,7 @@ struct retro_core_option_v2_category option_cats_us[] = {
 	{ "title_manager", "Title Manager", "Install and uninstall games, title updates and DLC in saves/Cemu/mlc01, the emulated console's storage, and convert the loaded title to a .wua." },
 	{ "core", "Core", "Options of this core that standalone Cemu does not have." },
 	{ "logging", "Logging", "Extra log output, for diagnosing problems." },
-	{ "amiibo", "Amiibo", "Amiibo for the GamePad's NFC reader: .bin dumps in system/Cemu/amiibo, picked and tapped from here." },
+	{ "amiibo", "Amiibo", "Amiibo for the GamePad's NFC reader: .bin dumps from system/Cemu/amiibo, an SD card or internal storage, picked and tapped from here." },
 	{ "graphic_packs", "Graphic Packs (Restart)", "The loaded game's graphic packs and their presets. Your own packs, or changed copies of the built-in ones, go in system/Cemu/customGraphicPacks." },
 	{ "cheats", "Cheats (Restart)", "The loaded game's cheat packs, from the graphic packs' Cheats folder." },
 	{ NULL, NULL, NULL },
@@ -799,10 +799,23 @@ struct retro_core_option_v2_definition option_defs_us[] = {
 		"disabled"
 	},
 	{
+		"cemu_amiibo_location",
+		"Amiibo Location",
+		NULL,
+		"Where amiibo are read from: system/Cemu/amiibo, a folder named amiibo at the top of internal storage or an SD card (or one folder down, such as ROMs/amiibo), one next to the loaded game, or a folder listed in system/Cemu/amiibo_paths.txt.",
+		NULL,
+		"amiibo",
+		{
+			// Filled in at run time with the locations found.
+			{ NULL, NULL },
+		},
+		NULL
+	},
+	{
 		"cemu_amiibo_folder",
 		"Amiibo Folder",
 		NULL,
-		"The folder in system/Cemu/amiibo that Amiibo lists. Subfolders are listed too, so a large collection can be split up: one folder lists at most 126 amiibo.",
+		"A folder inside Amiibo Location, or its top folder. Subfolders at any depth are listed.",
 		NULL,
 		"amiibo",
 		{
@@ -810,6 +823,19 @@ struct retro_core_option_v2_definition option_defs_us[] = {
 			{ NULL, NULL },
 		},
 		"."
+	},
+	{
+		"cemu_amiibo_group",
+		"Amiibo Letter",
+		NULL,
+		"Shown when the folder holds more amiibo than RetroArch can list at once: Amiibo then lists those starting with this letter.",
+		NULL,
+		"amiibo",
+		{
+			// Filled in at run time with the letters the folder's amiibo start with.
+			{ NULL, NULL },
+		},
+		NULL
 	},
 	{
 		"cemu_amiibo_file",
@@ -824,6 +850,20 @@ struct retro_core_option_v2_definition option_defs_us[] = {
 			{ NULL, NULL },
 		},
 		"none"
+	},
+	{
+		"cemu_amiibo_refresh",
+		"Refresh Amiibo List",
+		NULL,
+		"Reads the locations, folders and amiibo again, for files added or an SD card put in since the game was loaded. Goes back off by itself.",
+		NULL,
+		"amiibo",
+		{
+			{ "disabled", NULL },
+			{ "enabled", NULL },
+			{ NULL, NULL },
+		},
+		"disabled"
 	},
 	{
 		"cemu_amiibo_tap",
