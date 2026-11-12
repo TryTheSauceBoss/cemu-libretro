@@ -881,6 +881,13 @@ bool nnNfp_writeCurrentAmiibo()
 	return true;
 }
 
+static uint32 s_nnNfpTouchDurationMs = 1500;
+
+void nnNfp_setTouchDuration(uint32 milliseconds)
+{
+	s_nnNfpTouchDurationMs = milliseconds;
+}
+
 void nnNfp_update()
 {
 	// lock-free check if amiibo is touching
@@ -895,7 +902,7 @@ void nnNfp_update()
 		return;
 	}
 	uint32 amiiboElapsedTouchTime = GetTickCount() - nfp_data.amiiboTouchTime;
-	if (amiiboElapsedTouchTime >= 1500)
+	if (amiiboElapsedTouchTime >= s_nnNfpTouchDurationMs)
 	{
 		nnNfp_unloadAmiibo();
 		if (nfp_data.deactivateEvent)

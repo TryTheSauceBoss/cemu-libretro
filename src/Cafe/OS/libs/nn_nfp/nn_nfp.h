@@ -12,6 +12,8 @@ void nnNfp_load();
 void nnNfp_update();
 
 bool nnNfp_isInitialized();
+// How long a tag touched from a file stays on the reader; 1500 ms by default.
+void nnNfp_setTouchDuration(uint32 milliseconds);
 bool nnNfp_touchNfcTagFromFile(const fs::path& filePath, uint32* nfcError);
 
 #define NFP_STATE_NONE			(0)

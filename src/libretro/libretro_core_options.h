@@ -880,6 +880,23 @@ struct retro_core_option_v2_definition option_defs_us[] = {
 		"disabled"
 	},
 	{
+		"cemu_amiibo_hold_time",
+		"Amiibo Hold Time",
+		NULL,
+		"How long a tapped amiibo stays on the GamePad. Standalone Cemu keeps it 1.5 seconds; the default here is longer because the tap is made from RetroArch's menu, and a game running slowly on a phone may not look in time.",
+		NULL,
+		"amiibo",
+		{
+			{ "1.5", "1.5 seconds (standalone)" },
+			{ "3", "3 seconds" },
+			{ "5", "5 seconds" },
+			{ "10", "10 seconds" },
+			{ "30", "30 seconds" },
+			{ NULL, NULL },
+		},
+		"5"
+	},
+	{
 		"cemu_amiibo_tap_button",
 		"Tap Amiibo Button",
 		NULL,

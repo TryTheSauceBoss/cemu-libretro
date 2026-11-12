@@ -30,6 +30,7 @@
 #include "Cafe/OS/common/OSCommon.h"
 #include "Cafe/OS/RPL/rpl_structs.h"
 #include "Cafe/OS/libs/nfc/nfc.h"
+#include "Cafe/OS/libs/nn_nfp/nn_nfp.h"
 #include <fstream>
 #if defined(__MINGW32__)
 #include <pthread.h>
@@ -2986,9 +2987,15 @@ static void libretro_update_amiibo_visibility()
 	environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &display);
 }
 
-// Puts the selected amiibo on the GamePad's NFC reader, once. The title takes
-// it off again by itself, as standalone does, so a game that asks again needs
-// another tap.
+// Asks for the selected amiibo to be put on the GamePad's NFC reader. The
+// touch itself waits for libretro_process_amiibo_tap, in retro_run: a pick is
+// made in the frontend's menu, and the reader keeps a tag only for Amiibo Hold
+// Time, counted in real time, so touched from the menu it could be gone again
+// before the game ran a single frame to see it.
+static std::string s_amiibo_tap_pending;
+static std::chrono::steady_clock::time_point s_amiibo_tap_since;
+static bool s_amiibo_tap_waiting_shown = false;
+
 static void libretro_tap_amiibo()
 {
 	if (s_amiibo_selected.empty())
@@ -3001,16 +3008,48 @@ static void libretro_tap_amiibo()
 		libretro_show_message(RETRO_LOG_WARN, 4000, "Start a game before tapping an amiibo.");
 		return;
 	}
-	const fs::path path = _utf8ToPath(s_amiibo_selected);
+	s_amiibo_tap_pending = s_amiibo_selected;
+	s_amiibo_tap_since = std::chrono::steady_clock::now();
+	s_amiibo_tap_waiting_shown = false;
+}
+
+// How long a tap waits for the game to start its amiibo reader (nn_nfp, which
+// a title initialises when it starts looking for amiibo). A title that reads
+// tags through nfc/ntag directly never does, so after this the tap goes to
+// the reader regardless.
+static constexpr auto kAmiiboWaitForReader = std::chrono::seconds(20);
+
+static void libretro_process_amiibo_tap()
+{
+	if (s_amiibo_tap_pending.empty())
+		return;
+	if (!CafeSystem::IsTitleRunning())
+	{
+		s_amiibo_tap_pending.clear();
+		return;
+	}
+	const fs::path path = _utf8ToPath(s_amiibo_tap_pending);
 	const std::string name = _pathToUtf8(path.stem());
+	const auto waited = std::chrono::steady_clock::now() - s_amiibo_tap_since;
+	if (!nnNfp_isInitialized() && waited < kAmiiboWaitForReader)
+	{
+		if (!s_amiibo_tap_waiting_shown)
+		{
+			s_amiibo_tap_waiting_shown = true;
+			libretro_show_message(RETRO_LOG_INFO, 4000, fmt::format("{} will be tapped when the game asks for an amiibo", name));
+		}
+		return;
+	}
+	s_amiibo_tap_pending.clear();
 	uint32 error = 0;
 	if (!nfc::TouchTagFromFile(path, &error))
 	{
 		libretro_show_message(RETRO_LOG_ERROR, 6000, error == NFC_TOUCH_TAG_ERROR_NO_ACCESS
 			? fmt::format("Could not read amiibo {}", name)
-			: fmt::format("{} is not an amiibo dump (a 540-byte NTAG215 .bin)", name));
+			: fmt::format("Could not tap {}: the game is not reading amiibo, or the file is not an amiibo dump (a 540-byte NTAG215 .bin)", name));
 		return;
 	}
+	libretro_log(RETRO_LOG_INFO, "amiibo: tapped %s (game's amiibo reader %s)\n", _pathToUtf8(path).c_str(), nnNfp_isInitialized() ? "running" : "not started");
 	libretro_show_message(RETRO_LOG_INFO, 3000, fmt::format("Amiibo tapped: {}", name));
 }
 
@@ -3112,6 +3151,12 @@ static void libretro_apply_amiibo_options()
 	}
 
 	s_amiibo_button = libretro_parse_amiibo_button(libretro_get_option_value("cemu_amiibo_tap_button"));
+
+	if (const char* v = libretro_get_option_value("cemu_amiibo_hold_time"); v && *v)
+	{
+		const double seconds = std::clamp(atof(v), 1.5, 60.0);
+		nnNfp_setTouchDuration((uint32)(seconds * 1000.0));
+	}
 }
 
 // ----------------------------------------------------------------------------
@@ -3121,84 +3166,12 @@ static void libretro_apply_amiibo_options()
 // Control's "Load New Disc" opens it and hands the core the file picked. Each
 // "disc" here is an amiibo: inserting one taps it, and the list of discs is
 // the amiibo picked this way, so Disc Control's index switches between them.
-// The folder it came from becomes Amiibo Location (added to amiibo_paths.txt
-// when no location found it), with Folder, Letter and Amiibo set to match.
+// The amiibo options are left as they are: the folder is the user's to pick.
 static std::vector<std::string> s_amiibo_discs; // absolute paths; "" is an emptied slot
 static unsigned s_amiibo_disc_index = 0;
 // Closed tray with nothing in it at first: RetroArch's Load New Disc closes
 // the tray again after appending only if it found it closed.
 static bool s_amiibo_disc_ejected = false;
-
-static bool libretro_path_within(const fs::path& dir, const fs::path& file)
-{
-	const fs::path rel = file.lexically_relative(dir);
-	return !rel.empty() && *rel.begin() != "..";
-}
-
-// Points Location, Folder, Letter and Amiibo at a file picked in the browser.
-static void libretro_point_amiibo_options_at(const fs::path& file)
-{
-	if (!s_initialized)
-		return;
-	const fs::path dir = file.parent_path();
-	libretro_collect_amiibo_locations();
-	const LibretroAmiiboLocation* best = nullptr;
-	for (const LibretroAmiiboLocation& location : s_amiibo_locations)
-	{
-		const fs::path root = _utf8ToPath(location.path);
-		if ((root == dir || libretro_path_within(root, dir)) && (!best || location.path.size() > best->path.size()))
-			best = &location;
-	}
-	std::string locationPath;
-	if (best)
-		locationPath = best->path;
-	else
-	{
-		// Somewhere no location covers: remembered for next time
-		const fs::path listPath = ActiveSettings::GetUserDataPath() / "amiibo_paths.txt";
-		std::ofstream list(listPath, std::ios::app);
-		list << _pathToUtf8(dir) << "\n";
-		if (!list)
-			libretro_log(RETRO_LOG_WARN, "amiibo: could not add %s to amiibo_paths.txt\n", _pathToUtf8(dir).c_str());
-		locationPath = _pathToUtf8(dir);
-	}
-
-	std::string folder = ".";
-	if (_utf8ToPath(locationPath) != dir)
-	{
-		folder = _pathToUtf8(dir.lexically_relative(_utf8ToPath(locationPath)));
-		std::replace(folder.begin(), folder.end(), '\\', '/');
-	}
-	const std::string fileName = _pathToUtf8(file.filename());
-
-	s_amiibo_location = locationPath;
-	s_amiibo_folder = folder;
-	s_amiibo_group.clear();
-	libretro_publish_core_options(environ_cb, true);
-	// The letter list that holds the file, once the folder's files are known
-	const auto it = std::find(s_amiibo_folder_files.begin(), s_amiibo_folder_files.end(), fileName);
-	if (it != s_amiibo_folder_files.end())
-	{
-		const size_t index = (size_t)(it - s_amiibo_folder_files.begin());
-		for (const LibretroAmiiboGroup& group : s_amiibo_groups)
-		{
-			if (index >= group.begin && index < group.end && group.key != s_amiibo_group)
-			{
-				s_amiibo_group = group.key;
-				libretro_publish_core_options(environ_cb, true);
-				break;
-			}
-		}
-	}
-	libretro_sync_amiibo_chain();
-	if (it != s_amiibo_folder_files.end())
-	{
-		// Already tapped by the insert: the option update this causes is not
-		// a new pick.
-		s_amiibo_option_selected = _pathToUtf8(file);
-		libretro_set_option_value("cemu_amiibo_file", fileName.c_str());
-	}
-}
 
 static bool RETRO_CALLCONV libretro_amiibo_disc_set_eject_state(bool ejected)
 {
@@ -3253,7 +3226,6 @@ static bool RETRO_CALLCONV libretro_amiibo_disc_replace_image_index(unsigned ind
 		return false;
 	}
 	s_amiibo_discs[index] = info->path;
-	libretro_point_amiibo_options_at(path);
 	return true;
 }
 
@@ -8420,6 +8392,9 @@ RETRO_API void retro_run()
 		s_audio_submission_allowed = false;
 		environ_cb(RETRO_ENVIRONMENT_SHUTDOWN, nullptr);
 	}
+
+	// An amiibo picked in the menu goes on the reader now, with the game running
+	libretro_process_amiibo_tap();
 
 	if (s_convert_mode.load())
 	{
