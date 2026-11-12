@@ -6,7 +6,7 @@ corename = "Cemu+Amiibo"
 categories = "Emulator"
 license = "MPL-2.0"
 permissions = ""
-display_version = "2.6-411-gb487cb70"
+display_version = "2.6-411-gb487cb70 amiibo"
 
 # Hardware Information
 manufacturer = "Nintendo"

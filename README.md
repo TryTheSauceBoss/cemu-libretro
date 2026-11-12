@@ -2,6 +2,15 @@
 
 Cemu (Wii U emulator) as a libretro core for RetroArch, with amiibo support in the core options. It shows up in RetroArch as **Nintendo - Wii U (Cemu+Amiibo)** and is built as `cemu_amiibo_libretro`, so it installs next to the stock Cemu core rather than replacing it. Both use the same `system/Cemu` and `saves/Cemu` folders, so keys, games and saves are shared.
 
+## Download (Android)
+
+The newest Android build of this branch, and its `.info`, are always at the same place, no sign-in needed:
+
+- core: https://github.com/TryTheSauceBoss/cemu-libretro/releases/download/amiibo-latest/cemu_amiibo_libretro_android.so
+- info: https://github.com/TryTheSauceBoss/cemu-libretro/releases/download/amiibo-latest/cemu_amiibo_libretro.info
+
+Every build has the same file name, so check which one is running: **Quick Menu → Information → Core Information** shows a version ending in `amiibo-<commit>`, and a message with it appears when a game starts.
+
 ## Amiibo
 
 Amiibo are `.bin` NTAG215 dumps (540 bytes; 532-byte dumps work too). The amiibo keys are built in, so no `key_retail.bin` is needed.

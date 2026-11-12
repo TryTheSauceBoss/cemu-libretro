@@ -31,6 +31,9 @@
 #include "Cafe/OS/RPL/rpl_structs.h"
 #include "Cafe/OS/libs/nfc/nfc.h"
 #include "Cafe/OS/libs/nn_nfp/nn_nfp.h"
+
+#define LIBRETRO_AMIIBO_STR2(s) #s
+#define LIBRETRO_AMIIBO_STR(s) LIBRETRO_AMIIBO_STR2(s)
 #include <fstream>
 #if defined(__MINGW32__)
 #include <pthread.h>
@@ -4931,7 +4934,9 @@ RETRO_API unsigned retro_api_version()
 RETRO_API void retro_get_system_info(struct retro_system_info* info)
 {
 	info->library_name = "Cemu+Amiibo";
-	info->library_version = "2.6-411-gb487cb70";
+	// The commit of this build after the upstream version, so Core Information
+	// tells one amiibo build from the next (they all share one file name).
+	info->library_version = "2.6-411-gb487cb70 amiibo-" LIBRETRO_AMIIBO_STR(EMULATOR_HASH);
 	info->need_fullpath = true;
 	// tmd: NUS/WUP dumps are a directory of .app files next to a title.tmd,
 	// and pointing the core at that title.tmd loads the title.
@@ -6905,6 +6910,10 @@ RETRO_API bool retro_load_game(const struct retro_game_info* game)
 			return false;
 		}
 	}
+
+	// Which build is running, and where amiibo are picked
+	libretro_show_message(RETRO_LOG_INFO, 8000, "Cemu+Amiibo build amiibo-" LIBRETRO_AMIIBO_STR(EMULATOR_HASH)
+		": amiibo in Core Options > Amiibo, or Quick Menu > Disc Control > Load New Disc");
 
 	// Before the renderer, the context and the title: a load that cannot
 	// possibly succeed should fail while the frontend is still in a position to

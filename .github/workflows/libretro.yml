@@ -202,6 +202,9 @@ jobs:
   android:
     if: github.event_name != 'workflow_dispatch' || inputs.platforms == 'all' || contains(inputs.platforms, 'android')
     name: android-${{ matrix.abi }}
+    # Writes the amiibo-latest release (step below)
+    permissions:
+      contents: write
     runs-on: ubuntu-22.04
     # This target has never been built: the whole vcpkg set has to come up for a
     # cross triplet first, so do not fail the run over it.
@@ -263,3 +266,19 @@ jobs:
         with:
           name: cemu_amiibo_libretro-android-${{ matrix.abi }}
           path: ./cemu_amiibo_libretro_android.so
+
+      # The amiibo branch's arm64 core and its .info at one fixed link, with
+      # no zip and no sign-in: what testers install from.
+      - name: "Publish to the amiibo-latest release"
+        if: matrix.abi == 'arm64-v8a' && github.ref == 'refs/heads/amiibo'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          short=${GITHUB_SHA::7}
+          notes="Android arm64-v8a build of the amiibo branch, commit $short. Replaced on every push. In RetroArch, Core Information shows the version ending in amiibo-$short."
+          if ! gh release view amiibo-latest >/dev/null 2>&1; then
+            gh release create amiibo-latest --target "$GITHUB_SHA" --prerelease --title "Cemu+Amiibo (latest Android build)" --notes "$notes"
+          else
+            gh release edit amiibo-latest --notes "$notes"
+          fi
+          gh release upload amiibo-latest cemu_amiibo_libretro_android.so cemu_amiibo_libretro.info --clobber
