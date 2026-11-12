@@ -2669,7 +2669,8 @@ static void libretro_update_addon_visibility()
 // and nn_nfp writes the title's data back into the .bin, as a real figure
 // would keep it. The amiibo keys are built into Cemu, so no key_retail.bin.
 //
-// Where they are read from is Amiibo Location: system/Cemu/amiibo, any folder
+// Where they are read from is Amiibo Location: the folder picked as
+// Settings > Directory > File Browser in RetroArch, system/Cemu/amiibo, any folder
 // named amiibo (or amiibos) at the top of a storage volume or one folder down
 // - which is how an SD card is found on Android - one beside the loaded game
 // or its parent folder, and every folder listed in system/Cemu/amiibo_paths.txt.
@@ -2790,6 +2791,16 @@ static void libretro_collect_amiibo_locations()
 			}
 		}
 	};
+
+	// The folder picked with RetroArch's own file browser: Settings >
+	// Directory > File Browser, <Use this directory>. A core option cannot
+	// open a folder picker, and this is the one directory setting of the
+	// frontend's a core can read for this. First, so it is the default.
+	{
+		const char* picked = nullptr;
+		if (environ_cb && environ_cb(RETRO_ENVIRONMENT_GET_FILE_BROWSER_START_DIRECTORY, &picked) && picked && *picked)
+			add(_utf8ToPath(picked), "Picked in Settings > Directory > File Browser");
+	}
 
 	std::error_code ec;
 	const fs::path defaultRoot = libretro_amiibo_default_root();

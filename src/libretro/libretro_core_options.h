@@ -802,7 +802,7 @@ struct retro_core_option_v2_definition option_defs_us[] = {
 		"cemu_amiibo_location",
 		"Amiibo Location",
 		NULL,
-		"Where amiibo are read from: system/Cemu/amiibo, a folder named amiibo at the top of internal storage or an SD card (or one folder down, such as ROMs/amiibo), one next to the loaded game, or a folder listed in system/Cemu/amiibo_paths.txt.",
+		"Where amiibo are read from: the folder picked in Settings > Directory > File Browser (with <Use this directory>), system/Cemu/amiibo, a folder named amiibo at the top of internal storage or an SD card (or one folder down, such as ROMs/amiibo), one next to the loaded game, or a folder listed in system/Cemu/amiibo_paths.txt.",
 		NULL,
 		"amiibo",
 		{

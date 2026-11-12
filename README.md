@@ -8,6 +8,7 @@ Amiibo are `.bin` NTAG215 dumps (540 bytes; 532-byte dumps work too). The amiibo
 
 **Where the core looks** (each one found becomes a choice in **Amiibo Location**):
 
+- the folder picked in RetroArch's **Settings → Directory → File Browser** (browse to it, then **<Use this directory>**). This is listed first, so it is the default. To keep it from changing where Load Content starts for other cores, save it as a core override (**Quick Menu → Overrides → Save Core Overrides**) while the game is running.
 - `system/Cemu/amiibo/` (created on first run)
 - a folder named `amiibo` or `amiibos` (any capitalisation) at the top of internal storage or of an SD card, or one folder down, such as `ROMs/amiibo` (Android: `/storage/emulated/0` and every volume under `/storage`; elsewhere: the home folder)
 - an `amiibo` folder next to the loaded game, or next to the game's folder
