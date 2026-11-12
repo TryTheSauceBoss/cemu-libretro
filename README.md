@@ -24,7 +24,7 @@ SD card/
 
 **Core Options → Amiibo**:
 
-- **Amiibo Location**, then **Amiibo Folder** (the location's top folder or any subfolder), then **Amiibo**. Picking one while a game runs taps it on the GamePad.
+- **Amiibo Location**, then **Amiibo Folder** (the top folder, or any subfolder at any depth that holds amiibo, shown as its path), then **Amiibo**. Picking one while a game runs taps it on the GamePad.
 - RetroArch lists at most 128 values in an option, so a folder with more than 126 amiibo gets **Amiibo Letter**: pick the first letter, and Amiibo lists those. A letter with more than 126 is split into parts. There is no limit on the total.
 - **Refresh Amiibo List** reads everything again, for files copied or an SD card put in after the game was loaded.
 - **Tap Amiibo** taps the selected figure again, for when the game asks a second time. **Tap Amiibo Button** puts that on Select + L, R, L2 or R2 (off by default).

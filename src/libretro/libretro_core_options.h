@@ -815,7 +815,7 @@ struct retro_core_option_v2_definition option_defs_us[] = {
 		"cemu_amiibo_folder",
 		"Amiibo Folder",
 		NULL,
-		"A folder inside Amiibo Location, or its top folder. Subfolders at any depth are listed.",
+		"A folder inside Amiibo Location, or its top folder. Every subfolder that holds amiibo is listed, at any depth, as its path (Animal Crossing/Cards/Series 1).",
 		NULL,
 		"amiibo",
 		{

@@ -2873,12 +2873,32 @@ static void libretro_scan_amiibo()
 		std::error_code entryEc;
 		if (!it->is_directory(entryEc))
 			continue;
+		// Only folders that hold amiibo themselves: one that only holds other
+		// folders (Animal Crossing/ above Animal Crossing/Cards/Series 1) would
+		// be an empty list, and would take a place in a list of at most 126.
+		bool hasAmiibo = false;
+		std::error_code listEc;
+		for (auto file = fs::directory_iterator(it->path(), fs::directory_options::skip_permission_denied, listEc);
+			!listEc && file != fs::directory_iterator(); file.increment(listEc))
+		{
+			std::error_code fileEc;
+			if (file->is_regular_file(fileEc) && libretro_iequals(_pathToUtf8(file->path().extension()).c_str(), ".bin"))
+			{
+				hasAmiibo = true;
+				break;
+			}
+		}
+		if (!hasAmiibo)
+			continue;
 		std::string rel = _pathToUtf8(it->path().lexically_relative(root));
 		std::replace(rel.begin(), rel.end(), '\\', '/');
 		if (!rel.empty() && rel != ".")
 			subfolders.push_back(std::move(rel));
 	}
 	std::sort(subfolders.begin(), subfolders.end(), libretro_amiibo_less);
+	if (subfolders.size() + 1 > kAmiiboMaxListed)
+		libretro_log(RETRO_LOG_WARN, "amiibo: %u folders hold amiibo in %s; only the first %u are listed\n",
+			(unsigned)subfolders.size(), s_amiibo_location.c_str(), (unsigned)(kAmiiboMaxListed - 1));
 	for (std::string& folder : subfolders)
 	{
 		if (s_amiibo_folders.size() >= kAmiiboMaxListed)
