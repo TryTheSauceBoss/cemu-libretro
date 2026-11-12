@@ -1,6 +1,25 @@
-# Cemu Libretro
+# Cemu Libretro (Cemu+Amiibo)
 
-Cemu (Wii U emulator) as a libretro core for RetroArch.
+Cemu (Wii U emulator) as a libretro core for RetroArch, with amiibo support in the core options. It shows up in RetroArch as **Nintendo - Wii U (Cemu+Amiibo)** and is built as `cemu_amiibo_libretro`, so it installs next to the stock Cemu core rather than replacing it. Both use the same `system/Cemu` and `saves/Cemu` folders, so keys, games and saves are shared.
+
+## Amiibo
+
+```
+retroarch/
+└── system/
+    └── Cemu/
+        └── amiibo/                 (created on first run)
+            ├── Mario.bin
+            └── Zelda/              (subfolders are fine)
+                ├── Link.bin
+                └── Wolf Link.bin
+```
+
+- An amiibo is a `.bin` NTAG215 dump (540 bytes; 532-byte dumps work too). The amiibo keys are built in, so no `key_retail.bin` is needed.
+- **Core Options → Amiibo**: pick the folder in **Amiibo Folder** (at most 126 amiibo per folder, so split large collections into subfolders), then the figure in **Amiibo**. Picking one while a game runs taps it on the GamePad.
+- **Tap Amiibo** taps the selected figure again, for when the game asks for it a second time. **Tap Amiibo Button** puts that on Select + L, R, L2 or R2 (off by default).
+- The game writes its data back into the `.bin`, as it would to a real figure, so keep a copy of dumps you care about.
+- New files show up the next time the options are put together: at a game load, or when another folder is picked.
 
 Version: **2.6-411-gb487cb70**, upstream Cemu as merged (`b487cb70`, 10 Nov 2026).
 
@@ -35,14 +54,14 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=release \
 # Build
 cmake --build build --target cemu_libretro
 
-# Result: bin/cemu_libretro.so
+# Result: bin/cemu_amiibo_libretro.so
 ```
 
 ## Install
 
 ```bash
-cp bin/cemu_libretro.so ~/.config/retroarch/cores/
-cp cemu_libretro.info ~/.config/retroarch/info/
+cp bin/cemu_amiibo_libretro.so ~/.config/retroarch/cores/
+cp cemu_amiibo_libretro.info ~/.config/retroarch/info/
 ```
 
 ## Setup
@@ -117,7 +136,7 @@ git fetch cemuup main
 git merge cemuup/main
 ```
 
-Last sync: upstream `b487cb70` (merged 10 Nov 2026). The core reports its version as `git describe --tags --match v2.6 cemuup/main` (`2.6-411-gb487cb70`), set in `retro_get_system_info` and `cemu_libretro.info`; update both, and the version at the top of this README, on every sync.
+Last sync: upstream `b487cb70` (merged 10 Nov 2026). The core reports its version as `git describe --tags --match v2.6 cemuup/main` (`2.6-411-gb487cb70`), set in `retro_get_system_info` and `cemu_amiibo_libretro.info`; update both, and the version at the top of this README, on every sync.
 
 The fork has no `main` of its own: upstream is merged straight into `libretro`,
 the only long-lived branch here.
@@ -140,5 +159,5 @@ What tends to break on a sync, none of which the conflict resolution shows:
 
 Debugging a crash on aarch64: `backtrace()` cannot unwind past the signal frame,
 so the posix handler also records `fault/pc/lr/sp` into `<system>/Cemu/log.txt`.
-Convert `lr` with the module base from that log's `cemu_libretro.so(+0xOFFSET)
-[0xABSOLUTE]` line and run `addr2line -Cfie bin/cemu_libretro.so <offset>`.
+Convert `lr` with the module base from that log's `cemu_amiibo_libretro.so(+0xOFFSET)
+[0xABSOLUTE]` line and run `addr2line -Cfie bin/cemu_amiibo_libretro.so <offset>`.

@@ -121,7 +121,7 @@ if(ENABLE_LIBRETRO)
 	set_target_properties(cemu_libretro PROPERTIES
 		RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../bin/$<1:>"
 		LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../bin/$<1:>"
-		OUTPUT_NAME "cemu_libretro"
+		OUTPUT_NAME "cemu_amiibo_libretro"
 		PREFIX ""
 	)
 

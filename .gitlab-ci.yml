@@ -8,7 +8,7 @@
 .core-defs:
   variables:
     CORENAME: cemu
-    # CMake writes cemu_libretro.so to <source>/bin (see src/CMakeLists.txt),
+    # CMake writes cemu_amiibo_libretro.so to <source>/bin (see src/CMakeLists.txt),
     # which is outside of BUILD_DIR, so climb back out of build/linux-$ARCH.
     EXTRA_PATH: ../../bin
     CORE_ARGS: >-

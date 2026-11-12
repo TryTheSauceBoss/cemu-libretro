@@ -10,6 +10,7 @@ on:
   push:
     branches:
       - libretro
+      - amiibo
     paths-ignore:
       - '**.md'
   workflow_dispatch:
@@ -81,8 +82,8 @@ jobs:
       - name: "Upload artifact"
         uses: actions/upload-artifact@v6
         with:
-          name: cemu_libretro-linux-${{ matrix.arch }}
-          path: ./bin/cemu_libretro.so
+          name: cemu_amiibo_libretro-linux-${{ matrix.arch }}
+          path: ./bin/cemu_amiibo_libretro.so
 
   macos:
     if: github.event_name != 'workflow_dispatch' || inputs.platforms == 'all' || contains(inputs.platforms, 'macos')
@@ -147,8 +148,8 @@ jobs:
       - name: "Upload artifact"
         uses: actions/upload-artifact@v6
         with:
-          name: cemu_libretro-macos-${{ matrix.arch }}
-          path: ./bin/cemu_libretro.dylib
+          name: cemu_amiibo_libretro-macos-${{ matrix.arch }}
+          path: ./bin/cemu_amiibo_libretro.dylib
 
   windows:
     if: github.event_name != 'workflow_dispatch' || inputs.platforms == 'all' || contains(inputs.platforms, 'windows')
@@ -187,16 +188,16 @@ jobs:
       - name: "Upload artifact"
         uses: actions/upload-artifact@v6
         with:
-          name: cemu_libretro-windows-x64
-          path: ./bin/cemu_libretro.dll
+          name: cemu_amiibo_libretro-windows-x64
+          path: ./bin/cemu_amiibo_libretro.dll
 
       # The symbols, for reading crash offsets, apart from the core so that
       # downloading the core does not mean downloading them too
       - name: "Upload symbols"
         uses: actions/upload-artifact@v6
         with:
-          name: cemu_libretro-windows-x64-pdb
-          path: ./bin/cemu_libretro.pdb
+          name: cemu_amiibo_libretro-windows-x64-pdb
+          path: ./bin/cemu_amiibo_libretro.pdb
 
   android:
     if: github.event_name != 'workflow_dispatch' || inputs.platforms == 'all' || contains(inputs.platforms, 'android')
@@ -255,10 +256,10 @@ jobs:
         run: cmake --build build/android-${{ matrix.abi }} --target cemu_libretro --config Release -- -j $(nproc)
 
       - name: "Prepare artifact"
-        run: mv bin/cemu_libretro.so cemu_libretro_android.so
+        run: mv bin/cemu_amiibo_libretro.so cemu_amiibo_libretro_android.so
 
       - name: "Upload artifact"
         uses: actions/upload-artifact@v6
         with:
-          name: cemu_libretro-android-${{ matrix.abi }}
-          path: ./cemu_libretro_android.so
+          name: cemu_amiibo_libretro-android-${{ matrix.abi }}
+          path: ./cemu_amiibo_libretro_android.so

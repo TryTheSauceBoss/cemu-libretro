@@ -29,6 +29,7 @@
 #include "Cafe/OS/libs/coreinit/coreinit_Thread.h"
 #include "Cafe/OS/common/OSCommon.h"
 #include "Cafe/OS/RPL/rpl_structs.h"
+#include "Cafe/OS/libs/nfc/nfc.h"
 #include <fstream>
 #if defined(__MINGW32__)
 #include <pthread.h>
@@ -1035,8 +1036,8 @@ enum class LibretroLayoutButton
 };
 static LibretroLayoutButton s_next_layout_button = LibretroLayoutButton::None;
 static bool s_next_layout_button_held = false;
-// Set for every frame a layout combination is held, not only the frame the
-// layout changes in. Every button in those combinations means something to a
+// Set for every frame a layout combination (or the amiibo shortcut) is held,
+// not only the frame the layout changes in. Every button in those combinations means something to a
 // title as well - L3, R3, the shoulders, Select - so without this a layout
 // change also fires whatever the game has on them. Suppressing only the edge
 // frame was not enough: a press is held across many frames and the title saw
@@ -2167,9 +2168,14 @@ static void libretro_init_paths()
 	// RetroArch can already sort saves per core, in which case the directory it
 	// hands over is named after this one - and appending our own would make
 	// saves/Cemu/Cemu. Add the subdirectory only where it is not there yet.
+	// This build is named Cemu+Amiibo so it can sit next to the stock core;
+	// a directory RetroArch sorted under that name is swapped for its Cemu
+	// sibling, so both cores share keys, saves and mlc01.
 	const auto in_named_dir = [](const fs::path& dir) {
 		fs::path named = dir;
-		if (named.filename() != "Cemu")
+		if (named.filename() == "Cemu+Amiibo")
+			named = named.parent_path() / "Cemu";
+		else if (named.filename() != "Cemu")
 			named /= "Cemu";
 		return named;
 	};
@@ -2653,6 +2659,197 @@ static void libretro_update_addon_visibility()
 	}
 }
 
+// ============================================================================
+// Amiibo
+// ============================================================================
+// Amiibo are NTAG215 dumps (.bin) kept in system/Cemu/amiibo/ and its
+// subfolders. Tapping one goes through nfc::TouchTagFromFile, the same call
+// standalone Cemu's "NFC > Scan NFC tag from file" makes; it hands the tag to
+// nn_nfp when the title initialised it, and nn_nfp writes the title's data
+// back into the .bin, as a real figure would keep it. The amiibo keys are
+// built into Cemu, so no key_retail.bin is needed.
+//
+// A frontend lists at most RETRO_NUM_CORE_OPTION_VALUES_MAX values per option,
+// so the files are picked from one folder at a time: Amiibo Folder lists the
+// folders, Amiibo the .bin files in the chosen one.
+static void libretro_publish_core_options(retro_environment_t cb, bool withReplacements);
+
+static constexpr size_t kAmiiboMaxListed = RETRO_NUM_CORE_OPTION_VALUES_MAX - 2;
+// Relative to the amiibo root, '/'-separated; "." is the root itself.
+static std::vector<std::string> s_amiibo_folders;
+// File names in s_amiibo_folder.
+static std::vector<std::string> s_amiibo_files;
+static std::string s_amiibo_folder = ".";
+// Whether the folder has been read back from the frontend. Until it has, the
+// Amiibo option is not declared: declared with another folder's files, the
+// frontend would drop the choice remembered in the .opt file (as it did with
+// the accounts). libretro_publish_core_options declares the folders first,
+// reads the folder back and declares again with its files.
+static bool s_amiibo_folder_read = false;
+// The folder/file picked in the options, relative to the root; empty for none.
+static std::string s_amiibo_selected;
+
+enum class LibretroAmiiboButton
+{
+	None,
+	// Select together with a shoulder or trigger, which the GamePad does not
+	// press together in any title this was tried with; while held, the title
+	// sees no input (s_layout_combo_held_this_frame).
+	SelectL,
+	SelectR,
+	SelectL2,
+	SelectR2,
+};
+static LibretroAmiiboButton s_amiibo_button = LibretroAmiiboButton::None;
+static bool s_amiibo_button_held = false;
+
+static fs::path libretro_amiibo_root()
+{
+	return ActiveSettings::GetUserDataPath() / "amiibo";
+}
+
+static fs::path libretro_amiibo_folder_path(const std::string& folder)
+{
+	return folder == "." ? libretro_amiibo_root() : libretro_amiibo_root() / _utf8ToPath(folder);
+}
+
+static bool libretro_amiibo_less(const std::string& a, const std::string& b)
+{
+	return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end(),
+		[](unsigned char x, unsigned char y) { return std::tolower(x) < std::tolower(y); });
+}
+
+// The folders and, for the chosen folder, its .bin files. Read whenever the
+// options are published, so a file copied in shows up the next time the list
+// is put together (a game load, or picking a folder).
+static void libretro_scan_amiibo()
+{
+	s_amiibo_folders.clear();
+	s_amiibo_files.clear();
+	s_amiibo_folders.push_back(".");
+	if (!s_initialized)
+		return;
+
+	const fs::path root = libretro_amiibo_root();
+	std::error_code ec;
+	fs::create_directories(root, ec);
+
+	std::vector<std::string> subfolders;
+	ec.clear();
+	for (auto it = fs::recursive_directory_iterator(root, fs::directory_options::skip_permission_denied, ec);
+		!ec && it != fs::recursive_directory_iterator(); it.increment(ec))
+	{
+		std::error_code entryEc;
+		if (!it->is_directory(entryEc))
+			continue;
+		std::string rel = _pathToUtf8(it->path().lexically_relative(root));
+		std::replace(rel.begin(), rel.end(), '\\', '/');
+		if (!rel.empty() && rel != ".")
+			subfolders.push_back(std::move(rel));
+	}
+	std::sort(subfolders.begin(), subfolders.end(), libretro_amiibo_less);
+	for (std::string& folder : subfolders)
+	{
+		if (s_amiibo_folders.size() >= kAmiiboMaxListed)
+			break;
+		s_amiibo_folders.push_back(std::move(folder));
+	}
+	if (std::find(s_amiibo_folders.begin(), s_amiibo_folders.end(), s_amiibo_folder) == s_amiibo_folders.end())
+		s_amiibo_folder = ".";
+
+	ec.clear();
+	for (auto it = fs::directory_iterator(libretro_amiibo_folder_path(s_amiibo_folder), fs::directory_options::skip_permission_denied, ec);
+		!ec && it != fs::directory_iterator(); it.increment(ec))
+	{
+		std::error_code entryEc;
+		if (!it->is_regular_file(entryEc))
+			continue;
+		const std::string ext = _pathToUtf8(it->path().extension());
+		if (!libretro_iequals(ext.c_str(), ".bin"))
+			continue;
+		s_amiibo_files.push_back(_pathToUtf8(it->path().filename()));
+	}
+	std::sort(s_amiibo_files.begin(), s_amiibo_files.end(), libretro_amiibo_less);
+	if (s_amiibo_files.size() > kAmiiboMaxListed)
+	{
+		libretro_log(RETRO_LOG_WARN, "amiibo folder %s has %u .bin files; only the first %u are listed, put the rest in subfolders\n",
+			s_amiibo_folder.c_str(), (unsigned)s_amiibo_files.size(), (unsigned)kAmiiboMaxListed);
+		s_amiibo_files.resize(kAmiiboMaxListed);
+	}
+}
+
+// Puts the selected amiibo on the GamePad's NFC reader, once. The title takes
+// it off again by itself, as standalone does, so a game that asks again needs
+// another tap.
+static void libretro_tap_amiibo()
+{
+	if (s_amiibo_selected.empty())
+	{
+		libretro_show_message(RETRO_LOG_WARN, 4000, "No amiibo selected: pick one in Core Options > Amiibo.");
+		return;
+	}
+	if (!CafeSystem::IsTitleRunning())
+	{
+		libretro_show_message(RETRO_LOG_WARN, 4000, "Start a game before tapping an amiibo.");
+		return;
+	}
+	const fs::path path = libretro_amiibo_root() / _utf8ToPath(s_amiibo_selected);
+	const std::string name = _pathToUtf8(path.stem());
+	uint32 error = 0;
+	if (!nfc::TouchTagFromFile(path, &error))
+	{
+		libretro_show_message(RETRO_LOG_ERROR, 6000, error == NFC_TOUCH_TAG_ERROR_NO_ACCESS
+			? fmt::format("Could not read amiibo {}", name)
+			: fmt::format("{} is not an amiibo dump (a 540-byte NTAG215 .bin)", name));
+		return;
+	}
+	libretro_show_message(RETRO_LOG_INFO, 3000, fmt::format("Amiibo tapped: {}", name));
+}
+
+static LibretroAmiiboButton libretro_parse_amiibo_button(const char* v)
+{
+	if (!v)
+		return LibretroAmiiboButton::None;
+	if (libretro_iequals(v, "Select + L")) return LibretroAmiiboButton::SelectL;
+	if (libretro_iequals(v, "Select + R")) return LibretroAmiiboButton::SelectR;
+	if (libretro_iequals(v, "Select + L2")) return LibretroAmiiboButton::SelectL2;
+	if (libretro_iequals(v, "Select + R2")) return LibretroAmiiboButton::SelectR2;
+	return LibretroAmiiboButton::None;
+}
+
+static void libretro_apply_amiibo_options()
+{
+	// Another folder: its files are a different list, so the options are
+	// declared again, and the file picked in the old folder is let go.
+	if (const char* v = libretro_get_option_value("cemu_amiibo_folder"); v && *v && s_amiibo_folder_read && s_amiibo_folder != v)
+	{
+		s_amiibo_folder = v;
+		s_amiibo_folder_read = true;
+		libretro_publish_core_options(environ_cb, true);
+		libretro_set_option_value("cemu_amiibo_file", "none");
+	}
+
+	// Picking an amiibo while a game runs taps it, which is what someone who
+	// just picked one wants. At a game load the title is not running yet, so
+	// the choice remembered in the .opt file is only taken note of.
+	std::string selected;
+	if (const char* v = libretro_get_option_value("cemu_amiibo_file"); v && *v && strcmp(v, "none") != 0)
+		selected = s_amiibo_folder == "." ? std::string(v) : s_amiibo_folder + "/" + v;
+	const bool changed = selected != s_amiibo_selected;
+	s_amiibo_selected = std::move(selected);
+	if (changed && !s_amiibo_selected.empty() && CafeSystem::IsTitleRunning())
+		libretro_tap_amiibo();
+
+	// Tap Amiibo is a request, like the conversion switch: acted on, then off.
+	if (const char* v = libretro_get_option_value("cemu_amiibo_tap"); v && !strcmp(v, "enabled"))
+	{
+		libretro_set_option_value("cemu_amiibo_tap", "disabled");
+		libretro_tap_amiibo();
+	}
+
+	s_amiibo_button = libretro_parse_amiibo_button(libretro_get_option_value("cemu_amiibo_tap_button"));
+}
+
 static void libretro_update_screen_layout_visibility()
 {
 	if (!environ_cb)
@@ -2998,6 +3195,7 @@ static void libretro_apply_account_name_file(bool readNames);
 static void libretro_apply_core_options()
 {
 	libretro_handle_install_requests();
+	libretro_apply_amiibo_options();
 
 	// Create Account is a request, like the conversion switch: the account is
 	// made, the lists are published again with it, Active Account is set to
@@ -4038,6 +4236,42 @@ static void libretro_publish_core_options(retro_environment_t cb, bool withRepla
 		break;
 	}
 
+	// Amiibo: the folders under system/Cemu/amiibo and the .bin files in the
+	// chosen one, read now so the lists are current.
+	libretro_scan_amiibo();
+	for (struct retro_core_option_v2_definition& def : option_defs_us)
+	{
+		if (!def.key)
+			break;
+		if (!strcmp(def.key, "cemu_amiibo_folder"))
+		{
+			size_t index = 0;
+			for (const std::string& folder : s_amiibo_folders)
+			{
+				if (index + 1 >= RETRO_NUM_CORE_OPTION_VALUES_MAX)
+					break;
+				def.values[index].value = keep(folder);
+				def.values[index].label = keep(folder == "." ? std::string("amiibo (top folder)") : folder);
+				++index;
+			}
+			def.values[index] = {nullptr, nullptr};
+		}
+		else if (!strcmp(def.key, "cemu_amiibo_file"))
+		{
+			size_t index = 0;
+			def.values[index++] = {"none", "None"};
+			for (const std::string& file : s_amiibo_files)
+			{
+				if (index + 1 >= RETRO_NUM_CORE_OPTION_VALUES_MAX)
+					break;
+				def.values[index].value = keep(file);
+				def.values[index].label = keep(_pathToUtf8(_utf8ToPath(file).stem()));
+				++index;
+			}
+			def.values[index] = {nullptr, nullptr};
+		}
+	}
+
 	// The fixed options (System to Logging), then the loaded title's graphic
 	// packs, then its cheats, then the add-on options, which have no category.
 	// RetroArch lists the categories in the order their first option comes
@@ -4053,6 +4287,10 @@ static void libretro_publish_core_options(retro_environment_t cb, bool withRepla
 		if (!accountsKnown && (!strcmp(def.key, "cemu_account") || !strcmp(def.key, "cemu_create_account") || !strcmp(def.key, "cemu_rename_account") || !strcmp(def.key, "cemu_remove_account")))
 			continue;
 		if (s_wua_destinations.empty() && (!strcmp(def.key, "cemu_wua_output_dir") || !strcmp(def.key, "cemu_convert_to_wua")))
+			continue;
+		if (!accountsKnown && !strcmp(def.key, "cemu_amiibo_folder"))
+			continue;
+		if (!s_amiibo_folder_read && !strcmp(def.key, "cemu_amiibo_file"))
 			continue;
 		if (!def.category_key)
 			addons.push_back(def);
@@ -4083,6 +4321,16 @@ static void libretro_publish_core_options(retro_environment_t cb, bool withRepla
 	libretro_update_convert_visibility();
 	libretro_update_pack_visibility();
 	libretro_update_addon_visibility();
+
+	// The first time the folders are declared: read the folder back, now that
+	// the frontend knows the option, and declare again with its files.
+	if (accountsKnown && !s_amiibo_folder_read)
+	{
+		if (const char* v = libretro_get_option_value("cemu_amiibo_folder"); v && *v)
+			s_amiibo_folder = v;
+		s_amiibo_folder_read = true;
+		libretro_publish_core_options(cb, withReplacements);
+	}
 }
 
 RETRO_API void retro_set_video_refresh(retro_video_refresh_t cb) { video_cb = cb; }
@@ -4208,7 +4456,7 @@ RETRO_API unsigned retro_api_version()
 
 RETRO_API void retro_get_system_info(struct retro_system_info* info)
 {
-	info->library_name = "Cemu";
+	info->library_name = "Cemu+Amiibo";
 	info->library_version = "2.6-411-gb487cb70";
 	info->need_fullpath = true;
 	// tmd: NUS/WUP dumps are a directory of .app files next to a title.tmd,
@@ -7124,6 +7372,28 @@ static void libretro_poll_input()
 		if (down)
 			s_layout_combo_held_this_frame = true;
 		s_next_layout_button_held = down;
+	}
+
+	// The amiibo shortcut, on the press, and like the layout one the title
+	// does not see the frames it is held in.
+	if (s_amiibo_button != LibretroAmiiboButton::None)
+	{
+		const auto& pad = s_port_state[0];
+		unsigned other = RETRO_DEVICE_ID_JOYPAD_L;
+		switch (s_amiibo_button)
+		{
+		case LibretroAmiiboButton::None:
+		case LibretroAmiiboButton::SelectL: other = RETRO_DEVICE_ID_JOYPAD_L; break;
+		case LibretroAmiiboButton::SelectR: other = RETRO_DEVICE_ID_JOYPAD_R; break;
+		case LibretroAmiiboButton::SelectL2: other = RETRO_DEVICE_ID_JOYPAD_L2; break;
+		case LibretroAmiiboButton::SelectR2: other = RETRO_DEVICE_ID_JOYPAD_R2; break;
+		}
+		const bool down = pad.buttons[RETRO_DEVICE_ID_JOYPAD_SELECT] != 0 && pad.buttons[other] != 0;
+		if (down && !s_amiibo_button_held)
+			libretro_tap_amiibo();
+		if (down)
+			s_layout_combo_held_this_frame = true;
+		s_amiibo_button_held = down;
 	}
 
 	// Any frame the combination is held in is a frame the title does not see. The
