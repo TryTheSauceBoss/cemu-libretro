@@ -2706,8 +2706,11 @@ static std::string s_amiibo_group;
 // How many levels of the chain (location, folder, letter) have been read back
 // from the frontend; the amiibo itself is declared once all three have.
 static int s_amiibo_levels_read = 0;
-// The amiibo picked in the options, as an absolute path; empty for none.
+// The amiibo Tap Amiibo and its button tap: the one picked last, in the
+// options or with Disc Control; an absolute path, empty for none.
 static std::string s_amiibo_selected;
+// The one picked in the options, to tell when that choice changes.
+static std::string s_amiibo_option_selected;
 
 enum class LibretroAmiiboButton
 {
@@ -3093,10 +3096,13 @@ static void libretro_apply_amiibo_options()
 			path /= _utf8ToPath(s_amiibo_folder);
 		selected = _pathToUtf8(path / _utf8ToPath(v));
 	}
-	const bool changed = selected != s_amiibo_selected;
-	s_amiibo_selected = std::move(selected);
-	if (changed && !s_amiibo_selected.empty() && CafeSystem::IsTitleRunning())
-		libretro_tap_amiibo();
+	if (selected != s_amiibo_option_selected)
+	{
+		s_amiibo_option_selected = selected;
+		s_amiibo_selected = std::move(selected);
+		if (!s_amiibo_selected.empty() && CafeSystem::IsTitleRunning())
+			libretro_tap_amiibo();
+	}
 
 	// Tap Amiibo is a request, like the conversion switch: acted on, then off.
 	if (const char* v = libretro_get_option_value("cemu_amiibo_tap"); v && !strcmp(v, "enabled"))
@@ -3106,6 +3112,188 @@ static void libretro_apply_amiibo_options()
 	}
 
 	s_amiibo_button = libretro_parse_amiibo_button(libretro_get_option_value("cemu_amiibo_tap_button"));
+}
+
+// ----------------------------------------------------------------------------
+// Picking an amiibo with RetroArch's file browser
+// ----------------------------------------------------------------------------
+// A core cannot open the frontend's file browser from its options, but Disc
+// Control's "Load New Disc" opens it and hands the core the file picked. Each
+// "disc" here is an amiibo: inserting one taps it, and the list of discs is
+// the amiibo picked this way, so Disc Control's index switches between them.
+// The folder it came from becomes Amiibo Location (added to amiibo_paths.txt
+// when no location found it), with Folder, Letter and Amiibo set to match.
+static std::vector<std::string> s_amiibo_discs; // absolute paths; "" is an emptied slot
+static unsigned s_amiibo_disc_index = 0;
+// Closed tray with nothing in it at first: RetroArch's Load New Disc closes
+// the tray again after appending only if it found it closed.
+static bool s_amiibo_disc_ejected = false;
+
+static bool libretro_path_within(const fs::path& dir, const fs::path& file)
+{
+	const fs::path rel = file.lexically_relative(dir);
+	return !rel.empty() && *rel.begin() != "..";
+}
+
+// Points Location, Folder, Letter and Amiibo at a file picked in the browser.
+static void libretro_point_amiibo_options_at(const fs::path& file)
+{
+	if (!s_initialized)
+		return;
+	const fs::path dir = file.parent_path();
+	libretro_collect_amiibo_locations();
+	const LibretroAmiiboLocation* best = nullptr;
+	for (const LibretroAmiiboLocation& location : s_amiibo_locations)
+	{
+		const fs::path root = _utf8ToPath(location.path);
+		if ((root == dir || libretro_path_within(root, dir)) && (!best || location.path.size() > best->path.size()))
+			best = &location;
+	}
+	std::string locationPath;
+	if (best)
+		locationPath = best->path;
+	else
+	{
+		// Somewhere no location covers: remembered for next time
+		const fs::path listPath = ActiveSettings::GetUserDataPath() / "amiibo_paths.txt";
+		std::ofstream list(listPath, std::ios::app);
+		list << _pathToUtf8(dir) << "\n";
+		if (!list)
+			libretro_log(RETRO_LOG_WARN, "amiibo: could not add %s to amiibo_paths.txt\n", _pathToUtf8(dir).c_str());
+		locationPath = _pathToUtf8(dir);
+	}
+
+	std::string folder = ".";
+	if (_utf8ToPath(locationPath) != dir)
+	{
+		folder = _pathToUtf8(dir.lexically_relative(_utf8ToPath(locationPath)));
+		std::replace(folder.begin(), folder.end(), '\\', '/');
+	}
+	const std::string fileName = _pathToUtf8(file.filename());
+
+	s_amiibo_location = locationPath;
+	s_amiibo_folder = folder;
+	s_amiibo_group.clear();
+	libretro_publish_core_options(environ_cb, true);
+	// The letter list that holds the file, once the folder's files are known
+	const auto it = std::find(s_amiibo_folder_files.begin(), s_amiibo_folder_files.end(), fileName);
+	if (it != s_amiibo_folder_files.end())
+	{
+		const size_t index = (size_t)(it - s_amiibo_folder_files.begin());
+		for (const LibretroAmiiboGroup& group : s_amiibo_groups)
+		{
+			if (index >= group.begin && index < group.end && group.key != s_amiibo_group)
+			{
+				s_amiibo_group = group.key;
+				libretro_publish_core_options(environ_cb, true);
+				break;
+			}
+		}
+	}
+	libretro_sync_amiibo_chain();
+	if (it != s_amiibo_folder_files.end())
+	{
+		// Already tapped by the insert: the option update this causes is not
+		// a new pick.
+		s_amiibo_option_selected = _pathToUtf8(file);
+		libretro_set_option_value("cemu_amiibo_file", fileName.c_str());
+	}
+}
+
+static bool RETRO_CALLCONV libretro_amiibo_disc_set_eject_state(bool ejected)
+{
+	if (ejected == s_amiibo_disc_ejected)
+		return true;
+	s_amiibo_disc_ejected = ejected;
+	if (!ejected && s_amiibo_disc_index < s_amiibo_discs.size() && !s_amiibo_discs[s_amiibo_disc_index].empty())
+	{
+		s_amiibo_selected = s_amiibo_discs[s_amiibo_disc_index];
+		libretro_tap_amiibo();
+	}
+	return true;
+}
+
+static bool RETRO_CALLCONV libretro_amiibo_disc_get_eject_state()
+{
+	return s_amiibo_disc_ejected;
+}
+
+static unsigned RETRO_CALLCONV libretro_amiibo_disc_get_image_index()
+{
+	return s_amiibo_disc_index;
+}
+
+static bool RETRO_CALLCONV libretro_amiibo_disc_set_image_index(unsigned index)
+{
+	if (!s_amiibo_disc_ejected || index > s_amiibo_discs.size())
+		return false;
+	s_amiibo_disc_index = index;
+	return true;
+}
+
+static unsigned RETRO_CALLCONV libretro_amiibo_disc_get_num_images()
+{
+	return (unsigned)s_amiibo_discs.size();
+}
+
+static bool RETRO_CALLCONV libretro_amiibo_disc_replace_image_index(unsigned index, const struct retro_game_info* info)
+{
+	if (index >= s_amiibo_discs.size())
+		return false;
+	if (!info || !info->path)
+	{
+		s_amiibo_discs[index].clear();
+		return true;
+	}
+	const fs::path path = _utf8ToPath(info->path);
+	const std::string ext = _pathToUtf8(path.extension());
+	if (!libretro_iequals(ext.c_str(), ".bin"))
+	{
+		libretro_show_message(RETRO_LOG_WARN, 5000, "Only amiibo (.bin) can be loaded through Disc Control.");
+		return false;
+	}
+	s_amiibo_discs[index] = info->path;
+	libretro_point_amiibo_options_at(path);
+	return true;
+}
+
+static bool RETRO_CALLCONV libretro_amiibo_disc_add_image_index()
+{
+	s_amiibo_discs.emplace_back();
+	return true;
+}
+
+static bool RETRO_CALLCONV libretro_amiibo_disc_get_image_path(unsigned index, char* s, size_t len)
+{
+	if (index >= s_amiibo_discs.size() || s_amiibo_discs[index].empty() || !s || !len)
+		return false;
+	snprintf(s, len, "%s", s_amiibo_discs[index].c_str());
+	return true;
+}
+
+static bool RETRO_CALLCONV libretro_amiibo_disc_get_image_label(unsigned index, char* s, size_t len)
+{
+	if (index >= s_amiibo_discs.size() || s_amiibo_discs[index].empty() || !s || !len)
+		return false;
+	snprintf(s, len, "%s", _pathToUtf8(_utf8ToPath(s_amiibo_discs[index]).stem()).c_str());
+	return true;
+}
+
+static void libretro_register_amiibo_disc_control(retro_environment_t cb)
+{
+	static const struct retro_disk_control_ext_callback callbacks = {
+		libretro_amiibo_disc_set_eject_state,
+		libretro_amiibo_disc_get_eject_state,
+		libretro_amiibo_disc_get_image_index,
+		libretro_amiibo_disc_set_image_index,
+		libretro_amiibo_disc_get_num_images,
+		libretro_amiibo_disc_replace_image_index,
+		libretro_amiibo_disc_add_image_index,
+		nullptr, // set_initial_image: nothing to restore, an amiibo is tapped when picked
+		libretro_amiibo_disc_get_image_path,
+		libretro_amiibo_disc_get_image_label,
+	};
+	cb(RETRO_ENVIRONMENT_SET_DISK_CONTROL_EXT_INTERFACE, (void*)&callbacks);
 }
 
 static void libretro_update_screen_layout_visibility()
@@ -3875,6 +4063,10 @@ RETRO_API void retro_set_environment(retro_environment_t cb)
 	struct retro_log_callback logging;
 	if (cb(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &logging))
 		log_cb = logging.log;
+
+	// Disc Control's Load New Disc is how an amiibo is picked with the
+	// frontend's file browser
+	libretro_register_amiibo_disc_control(cb);
 
 	// A refusal keeps what an earlier call got. RetroArch calls
 	// retro_set_environment again whenever it reads the system info - first
@@ -4760,7 +4952,7 @@ RETRO_API void retro_get_system_info(struct retro_system_info* info)
 	info->need_fullpath = true;
 	// tmd: NUS/WUP dumps are a directory of .app files next to a title.tmd,
 	// and pointing the core at that title.tmd loads the title.
-	info->valid_extensions = "wud|wux|wua|iso|rpx|elf|tmd";
+	info->valid_extensions = "wud|wux|wua|iso|rpx|elf|tmd|bin";
 	info->block_extract = false;
 }
 
@@ -6719,6 +6911,17 @@ RETRO_API bool retro_load_game(const struct retro_game_info* game)
 {
 	if (!game || !game->path)
 		return false;
+
+	// .bin is among the extensions only so Disc Control's file browser lists
+	// amiibo; one loaded as the game is not a game.
+	{
+		const std::string ext = _pathToUtf8(_utf8ToPath(game->path).extension());
+		if (libretro_iequals(ext.c_str(), ".bin"))
+		{
+			libretro_show_message(RETRO_LOG_ERROR, 8000, "That is an amiibo, not a game: start the game, then pick it in Quick Menu > Disc Control > Load New Disc.");
+			return false;
+		}
+	}
 
 	// Before the renderer, the context and the title: a load that cannot
 	// possibly succeed should fail while the frontend is still in a position to
