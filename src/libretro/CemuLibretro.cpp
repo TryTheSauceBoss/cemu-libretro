@@ -4595,7 +4595,6 @@ static void libretro_publish_core_options(retro_environment_t cb, bool withRepla
 	libretro_update_convert_visibility();
 	libretro_update_pack_visibility();
 	libretro_update_addon_visibility();
-
 	libretro_update_amiibo_visibility();
 
 	// The first time: read the level just declared back, now that the
@@ -4611,7 +4610,6 @@ static void libretro_publish_core_options(retro_environment_t cb, bool withRepla
 		if (s_amiibo_levels_read == 3)
 			libretro_sync_amiibo_chain();
 	}
-}
 }
 
 RETRO_API void retro_set_video_refresh(retro_video_refresh_t cb) { video_cb = cb; }
