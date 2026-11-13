@@ -40,7 +40,7 @@ SD card/
 - A tap is made once the menu is closed and the game has started its amiibo reader (it waits up to 20 seconds for that, so an amiibo can be picked before the game asks). **Amiibo Hold Time** is how long it then stays on the GamePad: 5 seconds by default, 1.5 in standalone Cemu.
 - **Refresh Amiibo List** reads everything again, for files copied or an SD card put in after the game was loaded.
 - **Tap Amiibo** taps the selected figure again, for when the game asks a second time. **Tap Amiibo Button** puts that on Select + L, R, L2 or R2 (off by default).
-- The game writes its data back into the `.bin`, as it would to a real figure, so keep a copy of dumps you care about.
+- The game writes its data back into the `.bin`, as it would to a real figure, so keep a copy of dumps you care about. When the file cannot be written (Android does not let RetroArch write to an SD card), the amiibo is used from a copy in `system/Cemu/amiibo_saves/`, made the first time and used from then on, and the game saves there.
 
 ## Getting the core
 

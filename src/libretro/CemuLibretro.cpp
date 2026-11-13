@@ -3074,6 +3074,37 @@ static void libretro_tap_amiibo()
 // the reader regardless.
 static constexpr auto kAmiiboWaitForReader = std::chrono::seconds(20);
 
+// The game writes its data back into the amiibo's file (nn_nfp's Flush and
+// CreateApplicationArea), and a title waits on that write: Animal Crossing
+// amiibo Festival stays on its welcome screen when it fails. Android does not
+// let RetroArch write to an SD card, so an amiibo whose file cannot be written
+// is tapped from a copy in system/Cemu/amiibo_saves, made the first time and
+// used from then on, so what the game saved is there the next time.
+static fs::path libretro_amiibo_writable_path(const fs::path& original)
+{
+	{
+		std::fstream probe(original, std::ios::in | std::ios::out | std::ios::binary);
+		if (probe.is_open())
+			return original;
+	}
+	const std::string key = _pathToUtf8(original);
+	const fs::path dir = ActiveSettings::GetUserDataPath() / "amiibo_saves";
+	const fs::path copy = dir / _utf8ToPath(fmt::format("{}-{:08x}.bin", _pathToUtf8(original.stem()), (uint32)std::hash<std::string>{}(key)));
+	std::error_code ec;
+	if (!fs::exists(copy, ec))
+	{
+		fs::create_directories(dir, ec);
+		if (!fs::copy_file(original, copy, ec))
+		{
+			libretro_log(RETRO_LOG_WARN, "amiibo: %s cannot be written and could not be copied to %s; the game cannot save to it\n",
+				key.c_str(), _pathToUtf8(copy).c_str());
+			return original;
+		}
+		libretro_log(RETRO_LOG_INFO, "amiibo: %s cannot be written; the game saves to the copy %s\n", key.c_str(), _pathToUtf8(copy).c_str());
+	}
+	return copy;
+}
+
 static void libretro_process_amiibo_tap()
 {
 	if (s_amiibo_tap_pending.empty())
@@ -3097,7 +3128,7 @@ static void libretro_process_amiibo_tap()
 	}
 	s_amiibo_tap_pending.clear();
 	uint32 error = 0;
-	if (!nfc::TouchTagFromFile(path, &error))
+	if (!nfc::TouchTagFromFile(libretro_amiibo_writable_path(path), &error))
 	{
 		libretro_show_message(RETRO_LOG_ERROR, 6000, error == NFC_TOUCH_TAG_ERROR_NO_ACCESS
 			? fmt::format("Could not read amiibo {}", name)
