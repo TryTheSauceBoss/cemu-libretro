@@ -2863,83 +2863,123 @@ static void libretro_collect_amiibo_locations()
 #endif
 }
 
+// The disk is read once per game load (and on Refresh Amiibo List), not at
+// every publish: a load publishes the options several times, and searching
+// internal storage and an SD card full of games each time made a game take a
+// minute to start. What was read is kept, and read again only for a location
+// or folder not read yet.
+static bool s_amiibo_locations_stale = true;
+static std::string s_amiibo_scanned_location;   // whose folders s_amiibo_folders holds
+static std::string s_amiibo_scanned_folder_key; // location + '\n' + folder whose files s_amiibo_folder_files holds
+
+static void libretro_invalidate_amiibo_scan()
+{
+	s_amiibo_locations_stale = true;
+	s_amiibo_scanned_location.clear();
+	s_amiibo_scanned_folder_key.clear();
+}
+
 // The folders of the chosen location, the .bin files of the chosen folder and
-// how they split into lists. Read whenever the options are published, so what
-// is on disk then is what the menu shows; Refresh Amiibo List publishes again.
+// how they split into lists, for the options being published.
 static void libretro_scan_amiibo()
 {
-	s_amiibo_folders.clear();
-	s_amiibo_folder_files.clear();
 	s_amiibo_groups.clear();
-	s_amiibo_folders.push_back(".");
 	if (!s_initialized)
+	{
+		s_amiibo_folders.assign(1, ".");
+		s_amiibo_folder_files.clear();
 		return;
+	}
+	const auto started = std::chrono::steady_clock::now();
 
-	libretro_collect_amiibo_locations();
+	if (s_amiibo_locations_stale)
+	{
+		libretro_collect_amiibo_locations();
+		s_amiibo_locations_stale = false;
+		s_amiibo_scanned_location.clear();
+		s_amiibo_scanned_folder_key.clear();
+	}
 	if (std::none_of(s_amiibo_locations.begin(), s_amiibo_locations.end(),
 		[](const LibretroAmiiboLocation& l) { return l.path == s_amiibo_location; }))
 		s_amiibo_location = s_amiibo_locations.empty() ? std::string() : s_amiibo_locations.front().path;
 	if (s_amiibo_location.empty())
+	{
+		s_amiibo_folders.assign(1, ".");
+		s_amiibo_folder_files.clear();
+		s_amiibo_groups.push_back({"all", "All", 0, 0});
 		return;
-	const fs::path root = _utf8ToPath(s_amiibo_location);
-
-	std::vector<std::string> subfolders;
-	std::error_code ec;
-	for (auto it = fs::recursive_directory_iterator(root, fs::directory_options::skip_permission_denied, ec);
-		!ec && it != fs::recursive_directory_iterator(); it.increment(ec))
-	{
-		std::error_code entryEc;
-		if (!it->is_directory(entryEc))
-			continue;
-		// Only folders that hold amiibo themselves: one that only holds other
-		// folders (Animal Crossing/ above Animal Crossing/Cards/Series 1) would
-		// be an empty list, and would take a place in a list of at most 126.
-		bool hasAmiibo = false;
-		std::error_code listEc;
-		for (auto file = fs::directory_iterator(it->path(), fs::directory_options::skip_permission_denied, listEc);
-			!listEc && file != fs::directory_iterator(); file.increment(listEc))
-		{
-			std::error_code fileEc;
-			if (file->is_regular_file(fileEc) && libretro_iequals(_pathToUtf8(file->path().extension()).c_str(), ".bin"))
-			{
-				hasAmiibo = true;
-				break;
-			}
-		}
-		if (!hasAmiibo)
-			continue;
-		std::string rel = _pathToUtf8(it->path().lexically_relative(root));
-		std::replace(rel.begin(), rel.end(), '\\', '/');
-		if (!rel.empty() && rel != ".")
-			subfolders.push_back(std::move(rel));
 	}
-	std::sort(subfolders.begin(), subfolders.end(), libretro_amiibo_less);
-	if (subfolders.size() + 1 > kAmiiboMaxListed)
-		libretro_log(RETRO_LOG_WARN, "amiibo: %u folders hold amiibo in %s; only the first %u are listed\n",
-			(unsigned)subfolders.size(), s_amiibo_location.c_str(), (unsigned)(kAmiiboMaxListed - 1));
-	for (std::string& folder : subfolders)
+	const fs::path root = _utf8ToPath(s_amiibo_location);
+	std::error_code ec;
+
+	if (s_amiibo_scanned_location != s_amiibo_location)
 	{
-		if (s_amiibo_folders.size() >= kAmiiboMaxListed)
-			break;
-		s_amiibo_folders.push_back(std::move(folder));
+		s_amiibo_scanned_location = s_amiibo_location;
+		s_amiibo_scanned_folder_key.clear();
+		s_amiibo_folders.assign(1, ".");
+		std::vector<std::string> subfolders;
+		for (auto it = fs::recursive_directory_iterator(root, fs::directory_options::skip_permission_denied, ec);
+			!ec && it != fs::recursive_directory_iterator(); it.increment(ec))
+		{
+			std::error_code entryEc;
+			if (!it->is_directory(entryEc))
+				continue;
+			// Only folders that hold amiibo themselves: one that only holds other
+			// folders (Animal Crossing/ above Animal Crossing/Cards/Series 1) would
+			// be an empty list, and would take a place in a list of at most 126.
+			bool hasAmiibo = false;
+			std::error_code listEc;
+			for (auto file = fs::directory_iterator(it->path(), fs::directory_options::skip_permission_denied, listEc);
+				!listEc && file != fs::directory_iterator(); file.increment(listEc))
+			{
+				std::error_code fileEc;
+				if (file->is_regular_file(fileEc) && libretro_iequals(_pathToUtf8(file->path().extension()).c_str(), ".bin"))
+				{
+					hasAmiibo = true;
+					break;
+				}
+			}
+			if (!hasAmiibo)
+				continue;
+			std::string rel = _pathToUtf8(it->path().lexically_relative(root));
+			std::replace(rel.begin(), rel.end(), '\\', '/');
+			if (!rel.empty() && rel != ".")
+				subfolders.push_back(std::move(rel));
+		}
+		std::sort(subfolders.begin(), subfolders.end(), libretro_amiibo_less);
+		if (subfolders.size() + 1 > kAmiiboMaxListed)
+			libretro_log(RETRO_LOG_WARN, "amiibo: %u folders hold amiibo in %s; only the first %u are listed\n",
+				(unsigned)subfolders.size(), s_amiibo_location.c_str(), (unsigned)(kAmiiboMaxListed - 1));
+		for (std::string& folder : subfolders)
+		{
+			if (s_amiibo_folders.size() >= kAmiiboMaxListed)
+				break;
+			s_amiibo_folders.push_back(std::move(folder));
+		}
 	}
 	if (std::find(s_amiibo_folders.begin(), s_amiibo_folders.end(), s_amiibo_folder) == s_amiibo_folders.end())
 		s_amiibo_folder = ".";
 
-	const fs::path folderPath = s_amiibo_folder == "." ? root : root / _utf8ToPath(s_amiibo_folder);
-	ec.clear();
-	for (auto it = fs::directory_iterator(folderPath, fs::directory_options::skip_permission_denied, ec);
-		!ec && it != fs::directory_iterator(); it.increment(ec))
+	const std::string folderKey = s_amiibo_location + '\n' + s_amiibo_folder;
+	if (s_amiibo_scanned_folder_key != folderKey)
 	{
-		std::error_code entryEc;
-		if (!it->is_regular_file(entryEc))
-			continue;
-		const std::string ext = _pathToUtf8(it->path().extension());
-		if (!libretro_iequals(ext.c_str(), ".bin"))
-			continue;
-		s_amiibo_folder_files.push_back(_pathToUtf8(it->path().filename()));
+		s_amiibo_scanned_folder_key = folderKey;
+		s_amiibo_folder_files.clear();
+		const fs::path folderPath = s_amiibo_folder == "." ? root : root / _utf8ToPath(s_amiibo_folder);
+		ec.clear();
+		for (auto it = fs::directory_iterator(folderPath, fs::directory_options::skip_permission_denied, ec);
+			!ec && it != fs::directory_iterator(); it.increment(ec))
+		{
+			std::error_code entryEc;
+			if (!it->is_regular_file(entryEc))
+				continue;
+			const std::string ext = _pathToUtf8(it->path().extension());
+			if (!libretro_iequals(ext.c_str(), ".bin"))
+				continue;
+			s_amiibo_folder_files.push_back(_pathToUtf8(it->path().filename()));
+		}
+		std::sort(s_amiibo_folder_files.begin(), s_amiibo_folder_files.end(), libretro_amiibo_less);
 	}
-	std::sort(s_amiibo_folder_files.begin(), s_amiibo_folder_files.end(), libretro_amiibo_less);
 
 	// One list when they fit; otherwise one per first letter (# for the
 	// rest), and a letter with more than fit in a list is split into parts.
@@ -2979,9 +3019,10 @@ static void libretro_scan_amiibo()
 		[](const LibretroAmiiboGroup& g) { return g.key == s_amiibo_group; }))
 		s_amiibo_group = s_amiibo_groups.front().key;
 
-	libretro_log(RETRO_LOG_INFO, "amiibo: %u location(s), %u .bin in %s/%s, %u list(s)\n",
+	libretro_log(RETRO_LOG_INFO, "amiibo: %u location(s), %u .bin in %s/%s, %u list(s), %lld ms\n",
 		(unsigned)s_amiibo_locations.size(), (unsigned)s_amiibo_folder_files.size(),
-		s_amiibo_location.c_str(), s_amiibo_folder.c_str(), (unsigned)s_amiibo_groups.size());
+		s_amiibo_location.c_str(), s_amiibo_folder.c_str(), (unsigned)s_amiibo_groups.size(),
+		(long long)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count());
 }
 
 static const LibretroAmiiboGroup* libretro_amiibo_current_group()
@@ -3132,6 +3173,7 @@ static void libretro_apply_amiibo_options()
 		libretro_set_option_value("cemu_amiibo_refresh", "disabled");
 		if (s_initialized)
 		{
+			libretro_invalidate_amiibo_scan();
 			libretro_publish_core_options(environ_cb, true);
 			libretro_sync_amiibo_chain();
 			libretro_show_message(RETRO_LOG_INFO, 3000, fmt::format("{} amiibo in this folder", s_amiibo_folder_files.size()));
@@ -7107,6 +7149,7 @@ RETRO_API bool retro_load_game(const struct retro_game_info* game)
 	// Store the path. The title itself starts in the first retro_run, once
 	// context_reset has built a renderer for it to run on.
 	s_game_path = game->path;
+	libretro_invalidate_amiibo_scan(); // read the amiibo folders afresh for this game
 
 	// An update's or DLC's title.tmd is content to install, not to boot.
 	// Reading it decrypts it, and the crypto is otherwise set up only by
