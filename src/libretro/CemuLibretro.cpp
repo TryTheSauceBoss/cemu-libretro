@@ -3241,7 +3241,7 @@ static void libretro_apply_amiibo_options()
 
 	if (const char* v = libretro_get_option_value("cemu_amiibo_hold_time"); v && *v)
 	{
-		const double seconds = std::clamp(atof(v), 1.5, 60.0);
+		const double seconds = std::clamp(atof(v), 0.5, 60.0);
 		nnNfp_setTouchDuration((uint32)(seconds * 1000.0));
 	}
 }
