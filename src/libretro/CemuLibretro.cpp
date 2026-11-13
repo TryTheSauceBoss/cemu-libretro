@@ -3894,6 +3894,8 @@ static void libretro_apply_core_options()
 				logFlags |= cemuLog_getFlag(LogType::NN_AOC);
 				logFlags |= cemuLog_getFlag(LogType::NN_FP);
 				logFlags |= cemuLog_getFlag(LogType::NN_PDM);
+				logFlags |= cemuLog_getFlag(LogType::NN_NFP); // amiibo: what the title asks the reader, and when
+				logFlags |= cemuLog_getFlag(LogType::NFC);
 			}
 		}
 		// Texture memory: what the decoded textures are costing, and how much
