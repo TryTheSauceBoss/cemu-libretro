@@ -2879,6 +2879,25 @@ static void libretro_invalidate_amiibo_scan()
 	s_amiibo_scanned_folder_key.clear();
 }
 
+// An amiibo dump: a .bin of an NTAG215's size (540 bytes; 532 without the
+// signature, 572 with extra pages). Other systems' disc images are .bin too,
+// and on an SD card full of games they would fill every list.
+static bool libretro_is_amiibo_file(const fs::directory_entry& entry)
+{
+	std::error_code ec;
+	if (!entry.is_regular_file(ec))
+		return false;
+	if (!libretro_iequals(_pathToUtf8(entry.path().extension()).c_str(), ".bin"))
+		return false;
+	const uintmax_t size = entry.file_size(ec);
+	return !ec && size >= 532 && size <= 572;
+}
+
+// How deep Amiibo Folder looks below a location. Deep enough for
+// Animal Crossing/Amiibo Cards/Series 1; a location that is a whole SD card
+// (a File Browser directory set to its top) is not walked to the bottom.
+static constexpr int kAmiiboMaxFolderDepth = 4;
+
 // The folders of the chosen location, the .bin files of the chosen folder and
 // how they split into lists, for the options being published.
 static void libretro_scan_amiibo()
@@ -2909,6 +2928,17 @@ static void libretro_scan_amiibo()
 		s_amiibo_groups.push_back({"all", "All", 0, 0});
 		return;
 	}
+	// Until the location chosen in the .opt file has been read back, the
+	// location is only the first one found, and only Location is declared:
+	// reading its folders would be work thrown away, and on a whole SD card
+	// it took minutes.
+	if (s_amiibo_levels_read < 1)
+	{
+		s_amiibo_folders.assign(1, ".");
+		s_amiibo_folder_files.clear();
+		s_amiibo_groups.push_back({"all", "All", 0, 0});
+		return;
+	}
 	const fs::path root = _utf8ToPath(s_amiibo_location);
 	std::error_code ec;
 
@@ -2924,6 +2954,11 @@ static void libretro_scan_amiibo()
 			std::error_code entryEc;
 			if (!it->is_directory(entryEc))
 				continue;
+			const std::string dirName = _pathToUtf8(it->path().filename());
+			if (it.depth() + 1 >= kAmiiboMaxFolderDepth || dirName.starts_with(".") || libretro_iequals(dirName.c_str(), "Android"))
+				it.disable_recursion_pending();
+			if (dirName.starts_with(".") || libretro_iequals(dirName.c_str(), "Android"))
+				continue;
 			// Only folders that hold amiibo themselves: one that only holds other
 			// folders (Animal Crossing/ above Animal Crossing/Cards/Series 1) would
 			// be an empty list, and would take a place in a list of at most 126.
@@ -2932,8 +2967,7 @@ static void libretro_scan_amiibo()
 			for (auto file = fs::directory_iterator(it->path(), fs::directory_options::skip_permission_denied, listEc);
 				!listEc && file != fs::directory_iterator(); file.increment(listEc))
 			{
-				std::error_code fileEc;
-				if (file->is_regular_file(fileEc) && libretro_iequals(_pathToUtf8(file->path().extension()).c_str(), ".bin"))
+				if (libretro_is_amiibo_file(*file))
 				{
 					hasAmiibo = true;
 					break;
@@ -2970,11 +3004,7 @@ static void libretro_scan_amiibo()
 		for (auto it = fs::directory_iterator(folderPath, fs::directory_options::skip_permission_denied, ec);
 			!ec && it != fs::directory_iterator(); it.increment(ec))
 		{
-			std::error_code entryEc;
-			if (!it->is_regular_file(entryEc))
-				continue;
-			const std::string ext = _pathToUtf8(it->path().extension());
-			if (!libretro_iequals(ext.c_str(), ".bin"))
+			if (!libretro_is_amiibo_file(*it))
 				continue;
 			s_amiibo_folder_files.push_back(_pathToUtf8(it->path().filename()));
 		}
@@ -3309,7 +3339,9 @@ static bool RETRO_CALLCONV libretro_amiibo_disc_replace_image_index(unsigned ind
 	const std::string ext = _pathToUtf8(path.extension());
 	if (!libretro_iequals(ext.c_str(), ".bin"))
 	{
-		libretro_show_message(RETRO_LOG_WARN, 5000, "Only amiibo (.bin) can be loaded through Disc Control.");
+		// RetroArch offers the loaded game itself here too; only a picked .bin
+		// is an amiibo, and saying so on screen each time would be noise.
+		libretro_log(RETRO_LOG_INFO, "amiibo: Disc Control offered %s, which is not an amiibo; ignored\n", info->path);
 		return false;
 	}
 	s_amiibo_discs[index] = info->path;
